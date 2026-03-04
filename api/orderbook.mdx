@@ -826,6 +826,114 @@ Registers full appData so orders can reference it by hash.
 
 ---
 
+### Get Orders by Transaction Hash
+
+<CodeGroup>
+```bash cURL
+curl "https://api.cow.fi/mainnet/api/v1/orders/tx/0xd51f28edffcaaa76be4a22f6375ad289272c037f3cc072345676e88d92ced8b5"
+```
+</CodeGroup>
+
+Retrieves all orders that were settled in a specific transaction.
+
+**Endpoint**: `GET /api/v1/orders/tx/{txHash}`
+
+#### Path Parameters
+
+<ParamField path="txHash" type="string" required>
+  Settlement transaction hash (32 bytes hex with 0x prefix)
+</ParamField>
+
+#### Response
+
+<ResponseField name="orders" type="array">
+  Array of order objects that were included in the settlement transaction
+</ResponseField>
+
+**Status Codes**:
+- `200`: Orders retrieved
+- `400`: Invalid transaction hash
+
+---
+
+### Get Current Batch Auction
+
+<CodeGroup>
+```bash cURL
+curl "https://api.cow.fi/mainnet/api/v1/auction"
+```
+</CodeGroup>
+
+Returns the current batch auction that solvers should be solving. Includes solvable orders, block number, and token prices for objective value computation.
+
+**Endpoint**: `GET /api/v1/auction`
+
+<Note>
+  This endpoint is currently **permissioned**. Reach out in Discord if you need access for solver integration.
+</Note>
+
+#### Response
+
+<ResponseField name="id" type="integer">
+  Auction ID
+</ResponseField>
+
+<ResponseField name="block" type="integer">
+  Block number when the auction was created
+</ResponseField>
+
+<ResponseField name="orders" type="array">
+  Array of solvable orders in the auction
+</ResponseField>
+
+<ResponseField name="prices" type="object">
+  Token prices used for objective value computation
+</ResponseField>
+
+**Status Codes**:
+- `200`: Auction data retrieved
+- `403`: Unauthorized (permissioned endpoint)
+
+---
+
+### Get User Total Surplus
+
+<CodeGroup>
+```bash cURL
+curl "https://api.cow.fi/mainnet/api/v1/users/0x6810e776880c02933d47db1b9fc05908e5386b96/total_surplus"
+```
+</CodeGroup>
+
+Returns the total surplus (price improvement) earned by a user across all their trades.
+
+**Endpoint**: `GET /api/v1/users/{address}/total_surplus`
+
+<Warning>
+  This endpoint is **UNSTABLE** and under active development. The response format may change.
+</Warning>
+
+#### Path Parameters
+
+<ParamField path="address" type="address" required>
+  User's Ethereum address
+</ParamField>
+
+#### Response
+
+<ResponseField name="totalSurplus" type="string">
+  Total surplus earned in the native token (e.g., ETH)
+</ResponseField>
+
+<ResponseField name="numberOfTrades" type="integer">
+  Total number of trades executed by this address
+</ResponseField>
+
+**Status Codes**:
+- `200`: Surplus data retrieved
+- `400`: Invalid address
+
+---
+
 ## Data Types
 
 ### Address
