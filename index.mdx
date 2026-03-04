@@ -1,97 +1,191 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: CoW Protocol Services
+description: Off-chain backend services powering decentralized trading with batch auctions
+mode: custom
 ---
 
-## Setting up
+<div className="relative overflow-hidden bg-gradient-to-br from-[#5c1a8a] via-[#3AB4F2] to-[#f15a24] dark:from-[#0f1117] dark:via-[#1a1d27] dark:to-[#242838] py-20">
+  <div className="absolute inset-0 bg-black/30 dark:bg-black/50"></div>
+  <div className="relative max-w-6xl mx-auto px-6 lg:px-8">
+    <div className="text-center">
+      <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white dark:text-gray-100 mb-6">
+        CoW Protocol Services
+      </h1>
+      <p className="text-lg sm:text-xl text-white/90 dark:text-gray-300 max-w-3xl mx-auto mb-10">
+        Off-chain backend services for CoW Protocol — the decentralized trading protocol with batch auctions that protect traders from MEV on Ethereum and EVM networks.
+      </p>
+      <div className="flex flex-wrap justify-center gap-4">
+        <a 
+          href="/quickstart" 
+          className="inline-flex items-center px-6 py-3 rounded-full bg-[#5c1a8a] hover:bg-[#7c2aaa] text-white font-semibold transition-colors no-underline"
+        >
+          Get Started
+        </a>
+        <a 
+          href="/architecture" 
+          className="inline-flex items-center px-6 py-3 rounded-full border-2 border-white/40 bg-white/10 hover:bg-white/20 text-white font-semibold transition-colors no-underline"
+        >
+          Learn Architecture
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
 
-Get your documentation site up and running in minutes.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Quick Start
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400">
+      Get the services running locally in minutes
+    </p>
+  </div>
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+  <Steps>
+    <Step title="Clone the repository">
+      Clone the CoW Protocol Services repository and navigate to the project directory.
 
-## Make it yours
+      ```bash
+      git clone https://github.com/cowprotocol/services.git
+      cd services
+      ```
+    </Step>
 
-Design a docs site that looks great and empowers your users.
+    <Step title="Start the playground environment">
+      Launch the complete development stack using Docker Compose. This includes all services, PostgreSQL database, and a forked blockchain network.
 
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
-  </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
-  </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
-  </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
+      ```bash
+      docker compose -f playground/docker-compose.fork.yml up --build
+      ```
 
-## Create beautiful pages
+      <Note>
+        The playground requires an RPC endpoint. Configure `ETH_RPC_URL` in `playground/.env` before starting.
+      </Note>
+    </Step>
 
-Everything you need to create world-class documentation.
+    <Step title="Access the services">
+      Once the services are running, you can interact with them:
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+      - **Orderbook API**: `http://localhost:8080`
+      - **CoW Swap UI**: `http://localhost:8000`
+      - **CoW Explorer**: `http://localhost:8001`
+      - **Database Admin**: `http://localhost:8082`
 
-## Need inspiration?
+      The test mnemonic is: `test test test test test test test test test test test junk`
+    </Step>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    <Step title="Submit your first order">
+      Use the Orderbook API to submit a test order or interact with the CoW Swap UI in your browser.
+
+      ```bash
+      curl -X POST http://localhost:8080/api/v1/orders \
+        -H "Content-Type: application/json" \
+        -d @order.json
+      ```
+
+      Watch the logs in `autopilot`, `driver`, and `baseline` services to see the auction and settlement flow in action.
+    </Step>
+  </Steps>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Core Services
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400">
+      Explore the backend services that power CoW Protocol
+    </p>
+  </div>
+
+  <CardGroup cols={2}>
+    <Card title="Orderbook" icon="book" href="/services/orderbook">
+      HTTP API for order submission, queries, and validation. Users and frontends interact with this service to place and track orders.
+    </Card>
+    <Card title="Autopilot" icon="plane-engines" href="/services/autopilot">
+      Protocol driver that manages auctions, determines order inclusion, and coordinates the solver competition every ~12-15 seconds.
+    </Card>
+    <Card title="Driver" icon="car" href="/services/driver">
+      Executes solutions on-chain by fetching liquidity, encoding calldata, simulating transactions, and submitting settlements.
+    </Card>
+    <Card title="Solver" icon="brain" href="/services/solver">
+      Internal solver engine with baseline strategies for finding optimal routes and matching orders in batch auctions.
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      API Endpoints
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400">
+      RESTful APIs for interacting with CoW Protocol services
+    </p>
+  </div>
+
+  <CardGroup cols={2}>
+    <Card title="Orderbook API" icon="inbox" href="/api/orderbook">
+      Create orders, query order status, get fee estimates, and fetch quotes across all supported chains.
+    </Card>
+    <Card title="Autopilot API" icon="list" href="/api/autopilot">
+      Retrieve solvable orders and auction parameters for solver integration.
+    </Card>
+    <Card title="Driver API" icon="gear" href="/api/driver">
+      Submit solutions, reveal bids, and execute settlements in the protocol.
+    </Card>
+    <Card title="Solver API" icon="puzzle-piece" href="/api/solver">
+      Internal solver interface for baseline and custom solving strategies.
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Development Resources
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400">
+      Everything you need to contribute and deploy
+    </p>
+  </div>
+
+  <CardGroup cols={3}>
+    <Card title="Local Setup" icon="laptop-code" href="/development/setup">
+      Configure your development environment and install dependencies
+    </Card>
+    <Card title="Testing" icon="flask" href="/development/testing">
+      Run unit tests, database tests, and end-to-end tests with cargo nextest
+    </Card>
+    <Card title="Playground" icon="gamepad" href="/development/playground">
+      Use the Docker Compose playground for local development and debugging
+    </Card>
+    <Card title="Contributing" icon="code-pull-request" href="/development/contributing">
+      Code style, PR guidelines, and how to contribute to the project
+    </Card>
+    <Card title="Configuration" icon="sliders" href="/deployment/configuration">
+      Environment variables and service configuration options
+    </Card>
+    <Card title="Database" icon="database" href="/deployment/database">
+      PostgreSQL setup, migrations, and schema management
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="rounded-2xl border border-gray-200 dark:border-[#27272a] bg-gradient-to-br from-[#ffd9b8] to-[#3AB4F2] dark:from-[#1a1d27] dark:to-[#242838] p-8 sm:p-12 text-center">
+    <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Ready to dive in?
+    </h2>
+    <p className="text-base text-gray-700 dark:text-gray-300 max-w-2xl mx-auto mb-8">
+      Start exploring the architecture, spin up the services locally, or jump straight into the API documentation.
+    </p>
+    <a 
+      href="/quickstart" 
+      className="inline-flex items-center px-6 py-3 rounded-full bg-[#5c1a8a] hover:bg-[#7c2aaa] text-white font-semibold transition-colors no-underline"
+    >
+      Get Started Now
+    </a>
+  </div>
+</div>

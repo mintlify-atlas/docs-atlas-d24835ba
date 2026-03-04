@@ -1,0 +1,378 @@
+---
+title: Orderbook Service
+description: HTTP API service for order submission, validation, and quoting
+---
+
+The **Orderbook** service is the main entry point for users and integrators to interact with CoW Protocol. It provides an HTTP API for submitting orders, requesting quotes, and querying order status and trade history.
+
+## Purpose and Responsibilities
+
+The Orderbook service acts as the protocol's frontend interface:
+
+- **Order Validation**: Validates orders before accepting them, checking signatures, balances, token approvals, and order parameters
+- **Order Storage**: Persists valid orders to PostgreSQL for retrieval by the Autopilot service
+- **Quote Generation**: Provides price quotes for trading pairs using multiple price estimation backends
+- **Order Queries**: Enables users to retrieve order status, trade history, and auction data
+- **App Data Registry**: Stores and retrieves order metadata and IPFS content
+
+## API Overview
+
+The Orderbook exposes a comprehensive REST API with endpoints for:
+
+- `POST /api/v1/orders` - Submit new orders
+- `POST /api/v1/quote` - Request trading quotes
+- `GET /api/v1/orders/{uid}` - Retrieve order details
+- `GET /api/v1/account/{owner}/orders` - List user orders
+- `GET /api/v1/trades` - Query historical trades
+- `GET /api/v1/auction` - Get current auction data
+- `DELETE /api/v1/orders/{uid}` - Cancel orders
+
+<Info>
+For complete API documentation, see the [OpenAPI specification](https://api.cow.fi/docs/) available at the `/docs` endpoint when running the service.
+</Info>
+
+## Order Validation and Storage
+
+### Validation Process
+
+The Orderbook performs extensive validation before accepting orders:
+
+```rust
+// From crates/orderbook/src/run.rs
+let order_validator = Arc::new(OrderValidator::new(
+    native_token,
+    Arc::new(order_validation::banned::Users::new(
+        chainalysis_oracle,
+        config.banned_users.addresses,
+        config.banned_users.max_cache_size.get().to_u64().unwrap(),
+    )),
+    validity_configuration,
+    config.eip1271_skip_creation_validation,
+    deny_listed_tokens.clone(),
+    hooks_contract,
+    optimal_quoter.clone(),
+    balance_fetcher,
+    signature_validator,
+    Arc::new(postgres_write.clone()),
+    config.order_validation.max_limit_orders_per_user,
+    code_fetcher,
+    app_data_validator.clone(),
+    config.order_validation.max_gas_per_order,
+    config.order_validation.same_tokens_policy,
+));
+```
+
+**Validation checks include:**
+
+- **Signature verification**: EIP-712, EIP-1271, or PreSign validation
+- **Balance checks**: Ensures user has sufficient sell token balance
+- **Token approvals**: Verifies allowance for the settlement contract
+- **Banned users**: Checks against Chainalysis oracle and custom deny lists
+- **Token restrictions**: Blocks unsupported or malicious tokens
+- **Order validity period**: Enforces minimum and maximum validity durations
+- **Gas estimation**: Validates orders won't exceed gas limits
+- **Hooks validation**: Verifies pre/post-interaction hooks are safe
+
+### Storage Architecture
+
+Orders are stored in PostgreSQL with the following structure:
+
+- **Primary database**: Write operations go to the main database
+- **Read replica**: Optional read replica for query operations to reduce load
+- **Indexed fields**: Order UID, owner address, creation timestamp, status
+
+## PostgreSQL Integration
+
+The service connects to PostgreSQL for persistent storage:
+
+```rust
+// From crates/orderbook/src/arguments.rs
+/// Url of the Postgres database. By default connects to locally running postgres.
+#[clap(long, env, default_value = "postgresql://")]
+pub db_write_url: Url,
+
+/// Url of the Postgres database replica. By default it's the same as db_write_url
+#[clap(long, env)]
+pub db_read_url: Option<Url>,
+```
+
+**Database responsibilities:**
+
+- Order storage and retrieval
+- Trade history tracking
+- Native price caching
+- App data registry
+- Solver competition results
+- Order event logging
+
+<Tip>
+Configuring a read replica improves performance by offloading query operations from the write database.
+</Tip>
+
+## Fee Estimation and Quoting
+
+The Orderbook provides sophisticated quoting capabilities:
+
+### Quote Types
+
+**Optimal Quotes**: Full verification with best available prices
+```rust
+let optimal_quoter = create_quoter(price_estimator, args.price_estimation.quote_verification);
+```
+
+**Fast Quotes**: Unverified quotes for faster response times
+```rust
+let fast_quoter = create_quoter(fast_price_estimator, QuoteVerificationMode::Unverified);
+```
+
+### Price Estimation
+
+Quotes are generated using multiple price estimators:
+
+- **External solvers**: Query solver APIs for best prices
+- **Native price estimator**: Estimates token prices in native currency (ETH)
+- **Gas price estimator**: Calculates current gas costs
+- **Balance verification**: Ensures user can execute the quote
+
+### Volume Fees
+
+The service supports volume-based fee structures:
+
+```rust
+let quotes = QuoteHandler::new(
+    order_validator,
+    optimal_quoter,
+    app_data.clone(),
+    config.volume_fee,
+    args.shared.volume_fee_bucket_overrides.clone(),
+    args.shared.enable_sell_equals_buy_volume_fee,
+)
+.with_fast_quoter(fast_quoter);
+```
+
+## Configuration Options
+
+### Command-Line Arguments
+
+Key configuration parameters from `crates/orderbook/src/arguments.rs`:
+
+| Argument | Environment Variable | Default | Description |
+|----------|---------------------|---------|-------------|
+| `--bind-address` | `BIND_ADDRESS` | `0.0.0.0:8080` | HTTP server address |
+| `--db-write-url` | `DB_WRITE_URL` | `postgresql://` | Write database URL |
+| `--db-read-url` | `DB_READ_URL` | Same as write | Read replica URL |
+| `--config` | `CONFIG` | Required | Path to TOML config file |
+
+### Configuration File
+
+The service requires a TOML configuration file with settings for:
+
+<CodeGroup>
+```toml Order Validation
+[order-validation]
+min-order-validity-period = "1m"
+max-order-validity-period = "1d"
+max-limit-order-validity-period = "365d"
+max-limit-orders-per-user = 10
+max-gas-per-order = "10000000"
+```
+
+```toml Native Price Estimation
+[native-price-estimation]
+
+[[native-price-estimation.estimators]]
+estimator = "1inch"
+
+[[native-price-estimation.estimators]]
+estimator = "0x"
+
+[native-price-estimation.shared]
+results-required = 1
+
+[native-price-estimation.shared.cache]
+max-age = "1m"
+```
+
+```toml Banned Users
+[banned-users]
+addresses = []
+max-cache-size = 1000
+```
+
+```toml Volume Fees
+volume-fee = 0.001  # 0.1%
+```
+</CodeGroup>
+
+## Running the Service
+
+### Basic Setup
+
+<Steps>
+  <Step title="Start PostgreSQL">
+    Start a PostgreSQL database:
+    ```bash
+    docker compose up -d
+    ```
+  </Step>
+  
+  <Step title="Create Configuration">
+    Create a configuration file with your settings (see Configuration File above)
+  </Step>
+  
+  <Step title="Run the Service">
+    Start the Orderbook service:
+    ```bash
+    cargo run --bin orderbook -- \
+      --config /path/to/config.toml \
+      --bind-address 0.0.0.0:8080 \
+      --db-write-url postgresql://user:pass@localhost/db \
+      --node-url https://mainnet.infura.io/v3/YOUR_KEY
+    ```
+  </Step>
+  
+  <Step title="Verify">
+    Check the service is running:
+    ```bash
+    curl http://localhost:8080/api/v1/version
+    ```
+  </Step>
+</Steps>
+
+### Environment Variables
+
+```bash
+export CONFIG=/path/to/config.toml
+export BIND_ADDRESS=0.0.0.0:8080
+export DB_WRITE_URL=postgresql://user:pass@localhost/db
+export NODE_URL=https://mainnet.infura.io/v3/YOUR_KEY
+
+cargo run --bin orderbook
+```
+
+### Docker
+
+```bash
+docker run \
+  -p 8080:8080 \
+  -e CONFIG=/config.toml \
+  -e DB_WRITE_URL=postgresql://user:pass@db/cowswap \
+  -e NODE_URL=https://mainnet.infura.io/v3/YOUR_KEY \
+  -v /local/config.toml:/config.toml \
+  ghcr.io/cowprotocol/services:latest orderbook
+```
+
+## Key Dependencies
+
+The Orderbook service relies on several key components:
+
+### Internal Crates
+
+- **`shared`**: Common utilities for pricing, liquidity, and gas estimation
+- **`database`**: PostgreSQL abstraction and migrations
+- **`model`**: Order and API data models
+- **`contracts`**: Smart contract bindings (Settlement, WETH, Signatures)
+- **`price_estimation`**: Price estimation factory and backends
+- **`order_validation`**: Order validation logic
+
+### External Services
+
+- **PostgreSQL**: Primary data store
+- **Ethereum RPC node**: Blockchain state queries
+- **Price estimation drivers**: External solver APIs for quotes
+- **IPFS gateway**: Optional app data storage
+- **Chainalysis oracle**: Optional banned address detection
+
+### Smart Contracts
+
+```rust
+// From crates/orderbook/src/run.rs
+let settlement_contract = GPv2Settlement::Instance::deployed(&web3.provider)
+    .await
+    .expect("load settlement contract");
+
+let native_token = WETH9::Instance::deployed(&web3.provider)
+    .await
+    .expect("load native token contract");
+
+let signatures_contract = Signatures::Instance::deployed(&web3.provider)
+    .await
+    .expect("load signatures contract");
+```
+
+## Monitoring and Observability
+
+### Metrics
+
+The service exposes Prometheus metrics on the default metrics port:
+
+```bash
+curl http://localhost:9586/metrics
+```
+
+### Logging
+
+Structured logging with configurable levels:
+
+```bash
+# Set log level
+export LOG_FILTER="info,orderbook=debug,order_validation=trace"
+
+# Enable JSON logs
+export USE_JSON_LOGS=true
+```
+
+### Health Checks
+
+The service provides health check endpoints for monitoring:
+
+- Database connectivity check on startup
+- Regular order insertion/retrieval tests
+- Price estimator availability
+
+## Performance Considerations
+
+<Warning>
+**Database Connection Pooling**: Configure appropriate pool sizes based on expected load:
+```bash
+--db-max-connections 10
+```
+</Warning>
+
+**Optimization tips:**
+
+- Use a read replica for high query volumes
+- Enable fast quoter for price-insensitive queries
+- Configure appropriate quote timeouts
+- Tune price estimator cache settings
+- Monitor database query performance
+
+## Common Issues
+
+### Database Connection Errors
+
+Ensure PostgreSQL is running and accessible:
+```bash
+psql postgresql://user:pass@localhost/db -c "SELECT 1;"
+```
+
+### Order Validation Failures
+
+Check logs for specific validation errors. Common issues:
+- Insufficient token balance
+- Missing token approval
+- Invalid signature
+- Order validity period too short
+
+### Quote Timeout
+
+Increase timeout if price estimators are slow:
+```bash
+--quote-timeout 10s
+```
+
+## Related Services
+
+- [Autopilot](/services/autopilot) - Consumes orders from the Orderbook
+- [Driver](/services/driver) - Executes settlements from winning solutions
+- [Solver](/services/solver) - Computes optimal trading routes

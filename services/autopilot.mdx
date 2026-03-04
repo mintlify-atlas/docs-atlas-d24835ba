@@ -1,0 +1,546 @@
+---
+title: Autopilot Service
+description: Protocol driver managing batch auctions every 12-15 seconds
+---
+
+The **Autopilot** service is the central coordinator of CoW Protocol. It orchestrates batch auctions by gathering orders, running solver competitions, selecting winners, and managing settlement execution.
+
+## Purpose and Responsibilities
+
+Autopilot acts as the protocol's auctioneer and coordinator:
+
+- **Auction Management**: Runs auctions every ~12-15 seconds (eventually every block)
+- **Order Filtering**: Selects solvable orders from the orderbook based on validity and balances
+- **Fee Policy Application**: Applies protocol fee policies to orders
+- **Solver Competition**: Distributes auctions to drivers and collects solutions
+- **Winner Selection**: Ranks solutions and picks the best settlement(s)
+- **Settlement Monitoring**: Tracks on-chain execution and settlement outcomes
+
+## Auction Management
+
+### Auction Cycle
+
+Autopilot runs a continuous loop with the following phases:
+
+```rust
+// From crates/autopilot/src/run_loop.rs
+pub struct Config {
+    pub submission_deadline: u64,
+    pub max_settlement_transaction_wait: Duration,
+    pub solve_deadline: Duration,
+    pub max_run_loop_delay: Duration,
+    pub max_winners_per_auction: NonZeroUsize,
+    pub max_solutions_per_solver: NonZeroUsize,
+    pub enable_leader_lock: bool,
+    pub compress_solve_request: bool,
+}
+```
+
+**Typical auction timeline** (~12-15 seconds):
+
+1. **Block synchronization** (0-2s): Wait for new block
+2. **Maintenance** (0-5s): Update prices, indexed events, and CoW AMMs
+3. **Order preparation** (0-1s): Fetch and filter solvable orders
+4. **Solver competition** (12-15s): Send auction to drivers, collect solutions
+5. **Winner selection** (0-1s): Rank solutions and pick winner(s)
+6. **Settlement execution** (1-60s): Winning driver(s) submit to chain
+
+<Info>
+The `solve_deadline` parameter controls how long solvers have to compute solutions. Default is 15 seconds.
+</Info>
+
+### Auction Creation
+
+The autopilot creates auctions from solvable orders:
+
+```rust
+let solvable_orders_cache = SolvableOrdersCache::new(
+    args.min_order_validity_period,
+    persistence.clone(),
+    infra::banned::Users::new(
+        eth.contracts().chainalysis_oracle().clone(),
+        config.banned_users.addresses,
+        config.banned_users.max_cache_size.get().to_u64().unwrap(),
+    ),
+    balance_fetcher.clone(),
+    deny_listed_tokens.clone(),
+    competition_native_price_updater.clone(),
+    *eth.contracts().weth().address(),
+    domain::ProtocolFees::new(
+        &config.fee_policies,
+        args.shared.volume_fee_bucket_overrides.clone(),
+        args.shared.enable_sell_equals_buy_volume_fee,
+    ),
+    cow_amm_registry.clone(),
+    args.run_loop_native_price_timeout,
+    *eth.contracts().settlement().address(),
+    args.disable_order_balance_filter,
+);
+```
+
+## Order Inclusion Logic
+
+The autopilot filters orders to include in each auction:
+
+### Filtering Criteria
+
+**Valid orders must meet:**
+
+- ✅ Valid signature
+- ✅ Not expired (valid until timestamp not reached)
+- ✅ Sufficient balance (unless `disable_order_balance_filter` is set)
+- ✅ Not from banned addresses
+- ✅ Not using denied tokens
+- ✅ Minimum validity period remaining
+- ✅ Compatible with current auction ID
+
+### Order Types
+
+The autopilot handles multiple order types:
+
+- **Market orders**: Fill-or-kill orders seeking immediate execution
+- **Limit orders**: Partial-fill allowed, can remain in orderbook
+- **EthFlow orders**: Orders created via ETH deposits
+- **CoW AMM orders**: Automated market maker orders
+
+## Solver Competition Coordination
+
+### Driver Communication
+
+Autopilot distributes auctions to all configured drivers:
+
+```rust
+let drivers_futures = config
+    .drivers
+    .into_iter()
+    .map(|driver| async move {
+        infra::Driver::try_new(driver.url, driver.name.clone(), driver.submission_account)
+            .await
+            .map(Arc::new)
+            .expect("failed to load solver configuration")
+    })
+    .collect::<Vec<_>>();
+
+let drivers: Vec<_> = futures::future::join_all(drivers_futures).await;
+```
+
+### Competition Process
+
+<Steps>
+  <Step title="Auction Distribution">
+    Autopilot sends the auction to all drivers via HTTP POST to `/solve` endpoint
+  </Step>
+  
+  <Step title="Solution Collection">
+    Drivers have `solve_deadline` seconds to return solutions
+  </Step>
+  
+  <Step title="Solution Validation">
+    Autopilot validates each solution meets requirements
+  </Step>
+  
+  <Step title="Winner Selection">
+    Solutions are ranked by objective value and winner(s) selected
+  </Step>
+  
+  <Step title="Settlement Request">
+    Winning driver(s) receive `/settle` request with execution details
+  </Step>
+</Steps>
+
+### Request Compression
+
+For large auctions, autopilot can compress `/solve` request bodies:
+
+```bash
+--compress-solve-request true
+```
+
+## Fee Policies
+
+Autopilot applies protocol fee policies to orders based on their characteristics:
+
+### Fee Policy Types
+
+From `crates/autopilot/src/config/fee_policy.rs`:
+
+```rust
+pub enum FeePolicyKind {
+    /// How much of the order's surplus should be taken as a protocol fee.
+    Surplus {
+        factor: FeeFactor,
+        max_volume_factor: FeeFactor,
+    },
+    /// How much of the order's price improvement should be taken as a protocol fee
+    /// where price improvement is the difference between executed price and best quote.
+    PriceImprovement {
+        factor: FeeFactor,
+        max_volume_factor: FeeFactor,
+    },
+    /// How much of the order's volume should be taken as a protocol fee.
+    Volume { factor: FeeFactor },
+}
+```
+
+### Fee Configuration
+
+Fee policies are configured per order class:
+
+<CodeGroup>
+```toml Surplus Fee
+[[policies]]
+kind.surplus = { factor = 0.5, max-volume-factor = 0.01 }
+order-class = "market"
+```
+
+```toml Price Improvement Fee
+[[policies]]
+kind.price-improvement = { factor = 0.5, max-volume-factor = 0.06 }
+order-class = "market"
+```
+
+```toml Volume Fee
+[[policies]]
+kind.volume = { factor = 0.001 }
+order-class = "limit"
+```
+</CodeGroup>
+
+### Partner Fees
+
+The protocol supports partner fee caps:
+
+```toml
+max-partner-fee = 0.01  # Maximum 1% partner fee
+```
+
+### Upcoming Fee Changes
+
+Fee policies can be scheduled for future activation:
+
+```toml
+[upcoming-policies]
+effective-from-timestamp = "2025-06-01T00:00:00Z"
+
+[[upcoming-policies.policies]]
+kind.volume = { factor = 0.002 }
+order-class = "any"
+```
+
+## Configuration Options
+
+### Command-Line Arguments
+
+Key parameters from `crates/autopilot/src/arguments.rs`:
+
+| Argument | Environment Variable | Default | Description |
+|----------|---------------------|---------|-------------|
+| `--config` | `CONFIG` | Required | Path to TOML config |
+| `--metrics-address` | `METRICS_ADDRESS` | `0.0.0.0:9589` | Metrics server address |
+| `--api-address` | `API_ADDRESS` | `0.0.0.0:12088` | API server address |
+| `--db-write-url` | `DB_WRITE_URL` | `postgresql://` | Database URL |
+| `--solve-deadline` | `SOLVE_DEADLINE` | `15s` | Solver time limit |
+| `--submission-deadline` | `SUBMISSION_DEADLINE` | `5` | Max blocks for settlement |
+| `--max-settlement-transaction-wait` | `MAX_SETTLEMENT_TRANSACTION_WAIT` | `1m` | Settlement wait time |
+| `--max-auction-age` | `MAX_AUCTION_AGE` | `5m` | Max time since last auction |
+| `--max-winners-per-auction` | `MAX_WINNERS_PER_AUCTION` | `20` | Max parallel winners |
+| `--max-solutions-per-solver` | `MAX_SOLUTIONS_PER_SOLVER` | `3` | Solutions per solver |
+| `--max-run-loop-delay` | `MAX_RUN_LOOP_DELAY` | `2s` | Max delay before resync |
+| `--enable-leader-lock` | `ENABLE_LEADER_LOCK` | `false` | Enable HA leader election |
+| `--compress-solve-request` | `COMPRESS_SOLVE_REQUEST` | `false` | Compress auction data |
+| `--skip-event-sync` | `SKIP_EVENT_SYNC` | `false` | Skip historical events |
+
+### Configuration File
+
+The autopilot requires a TOML configuration file:
+
+<CodeGroup>
+```toml Drivers
+[[drivers]]
+name = "solver-1"
+url = "http://solver-1.example.com:11088"
+submission-account = "address:0x1234..."  # or "private-key:0xabcd..."
+
+[[drivers]]
+name = "solver-2"
+url = "http://solver-2.example.com:11088"
+submission-account = "private-key:0x5678..."
+```
+
+```toml Fee Policies
+[fee-policies]
+max-partner-fee = 0.01
+
+[[fee-policies.policies]]
+kind.surplus = { factor = 0.5, max-volume-factor = 0.01 }
+order-class = "market"
+
+[[fee-policies.policies]]
+kind.volume = { factor = 0.001 }
+order-class = "limit"
+```
+
+```toml Trusted Tokens
+[trusted-tokens]
+url = "https://tokens.coingecko.com/uniswap/all.json"
+update-interval = "1h"
+tokens = [
+    "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # WETH
+    "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",  # USDC
+]
+```
+
+```toml Native Price Estimation
+[native-price-estimation]
+
+[[native-price-estimation.estimators]]
+estimator = "balancer-sor"
+
+[native-price-estimation.shared]
+results-required = 1
+
+[native-price-estimation.shared.cache]
+max-age = "1m"
+
+cache-refresh-interval = "30s"
+prefetch-time = "5s"
+```
+</CodeGroup>
+
+## Running the Service
+
+### Basic Setup
+
+<Steps>
+  <Step title="Start Dependencies">
+    Start PostgreSQL and ensure an Ethereum node is available:
+    ```bash
+    docker compose up -d
+    ```
+  </Step>
+  
+  <Step title="Create Configuration">
+    Create a configuration file with drivers and fee policies
+  </Step>
+  
+  <Step title="Run Autopilot">
+    Start the service:
+    ```bash
+    cargo run --bin autopilot -- \
+      --config /path/to/config.toml \
+      --db-write-url postgresql://user:pass@localhost/db \
+      --node-url https://mainnet.infura.io/v3/YOUR_KEY \
+      --solve-deadline 15s \
+      --max-winners-per-auction 20
+    ```
+  </Step>
+  
+  <Step title="Monitor">
+    Check metrics and logs:
+    ```bash
+    curl http://localhost:9589/metrics
+    ```
+  </Step>
+</Steps>
+
+### Shadow Mode
+
+For testing without actual settlements:
+
+```bash
+cargo run --bin autopilot -- \
+  --config /path/to/config.toml \
+  --shadow https://api.cow.fi/mainnet
+```
+
+<Warning>
+Shadow mode pulls auctions from an upstream CoW Protocol deployment and simulates competition without submitting settlements.
+</Warning>
+
+### High Availability
+
+Enable leader election for multiple autopilot instances:
+
+```bash
+--enable-leader-lock true
+```
+
+Only the leader instance will cut auctions; followers will remain on standby.
+
+## Database Schema Usage
+
+Autopilot interacts with several PostgreSQL tables:
+
+### Core Tables
+
+- **`orders`**: Stores all submitted orders
+- **`order_events`**: Tracks order lifecycle events
+- **`trades`**: Records executed trades
+- **`settlements`**: Stores settlement transaction data
+- **`solver_competitions`**: Archives competition results
+- **`auction_prices`**: Caches native token prices
+
+### Event Indexing
+
+Autopilot indexes on-chain events:
+
+```rust
+let settlement_event_indexer = EventUpdater::new(
+    boundary::events::settlement::GPv2SettlementContract::new(
+        web3.provider.clone(),
+        *eth.contracts().settlement().address(),
+    ),
+    boundary::events::settlement::Indexer::new(
+        db_write.clone(),
+        settlement_contract_start_index,
+    ),
+    block_retriever.clone(),
+    skip_event_sync_start,
+);
+```
+
+**Indexed events:**
+
+- Settlement events from GPv2Settlement contract
+- EthFlow order creation and refunds
+- CoW AMM pool deployments and updates
+
+### Cleanup Tasks
+
+Periodic database maintenance:
+
+```rust
+let order_events_cleaner = crate::periodic_db_cleanup::OrderEventsCleaner::new(
+    order_events_cleaner_config,
+    db_write.clone(),
+);
+```
+
+## Observability
+
+### Metrics
+
+Prometheus metrics available at `http://localhost:9589/metrics`:
+
+- `autopilot_auction_duration_seconds` - Time to complete auction
+- `autopilot_solutions_received` - Solutions per auction
+- `autopilot_settlement_submissions` - Settlement submission attempts
+- `autopilot_last_auction_timestamp` - Last successful auction time
+
+### Liveness Checks
+
+The service implements liveness checking:
+
+```rust
+impl LivenessChecking for Liveness {
+    async fn is_alive(&self) -> bool {
+        let last_auction_time = self.last_auction_time.read().unwrap();
+        let auction_age = last_auction_time.elapsed();
+        auction_age <= self.max_auction_age
+    }
+}
+```
+
+Kubernetes liveness probe will fail if no auction runs within `max_auction_age`.
+
+### Logging
+
+Structured logging with contextual information:
+
+```bash
+export LOG_FILTER="info,autopilot=debug,run_loop=trace"
+export USE_JSON_LOGS=true
+```
+
+## Advanced Features
+
+### CoW AMM Integration
+
+Autopilot can index and include CoW AMM pools:
+
+```bash
+--cow-amm-configs "0xfactory|0xhelper|12345678"
+```
+
+Format: `factory_address|helper_address|start_block`
+
+### EthFlow Support
+
+Enable EthFlow order handling:
+
+```bash
+--ethflow-contracts 0xEthFlowContract1,0xEthFlowContract2 \
+--ethflow-indexing-start 17000000
+```
+
+### Archive Node
+
+For historical event indexing:
+
+```bash
+--archive-node-url https://archive.node.example.com
+```
+
+## Performance Tuning
+
+<CardGroup cols={2}>
+  <Card title="Solver Deadline" icon="clock">
+    Balance between solution quality and auction frequency:
+    ```bash
+    --solve-deadline 12s
+    ```
+  </Card>
+  
+  <Card title="Maintenance Timeout" icon="wrench">
+    Limit maintenance time to avoid stalling:
+    ```bash
+    --max-maintenance-timeout 5s
+    ```
+  </Card>
+  
+  <Card title="Database Pool" icon="database">
+    Tune connection pool for load:
+    ```bash
+    --db-max-connections 20
+    ```
+  </Card>
+  
+  <Card title="Request Compression" icon="compress">
+    Enable for large auctions:
+    ```bash
+    --compress-solve-request true
+    ```
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Auctions Not Running
+
+Check:
+1. Database connectivity
+2. Ethereum node sync status
+3. Driver availability
+4. Liveness check status
+
+### No Solvable Orders
+
+Common causes:
+- All orders expired
+- Insufficient balances
+- Token deny list blocking trades
+- Price estimation failures
+
+### Settlement Failures
+
+Investigate:
+1. Driver logs for error details
+2. On-chain transaction status
+3. Gas price estimation
+4. Smart contract event logs
+
+## Related Services
+
+- [Orderbook](/services/orderbook) - Provides orders to Autopilot
+- [Driver](/services/driver) - Executes settlements from Autopilot
+- [Solver](/services/solver) - Computes solutions for auctions

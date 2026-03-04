@@ -1,0 +1,560 @@
+---
+title: Solver Service
+description: Baseline solver engine for finding optimal trading routes
+---
+
+The **Solver** service (also called "solver engine") is the mathematical brain of the trading system. It receives auctions with on-chain liquidity and computes optimal trading routes to settle orders with the best possible prices.
+
+<Info>
+This documentation covers the **baseline solver** implementation. External solvers may use different algorithms and strategies.
+</Info>
+
+## Purpose and Responsibilities
+
+The Solver focuses purely on route-finding optimization:
+
+- **Route Discovery**: Finds trading paths through DEX liquidity
+- **Order Matching**: Identifies Coincidence of Wants (CoWs) between orders
+- **Solution Scoring**: Calculates objective value for each proposed solution
+- **Partial Fills**: Handles partially-fillable limit orders
+- **Multi-hop Routing**: Explores paths through intermediate tokens
+
+**What the Solver does NOT do:**
+
+- ❌ Fetch liquidity (handled by Driver)
+- ❌ Encode settlements (handled by Driver)
+- ❌ Submit transactions (handled by Driver)
+- ❌ Manage gas prices (handled by Driver)
+
+## Baseline Solver Strategies
+
+The baseline solver implements several strategies:
+
+### 1. Direct Matching (CoW)
+
+Matches orders directly when they overlap:
+
+```
+Order A: Sell 100 USDC for ≥0.9 WETH
+Order B: Sell 1 WETH for ≥105 USDC
+
+CoW Match: Trade 100 USDC ↔ 0.95 WETH
+(Both orders get better than limit price)
+```
+
+### 2. Single-Hop Routing
+
+Routes through one liquidity source:
+
+```
+Order: Sell 1000 DAI for WETH
+↓
+Uniswap V2: DAI → WETH
+```
+
+### 3. Multi-Hop Routing
+
+Finds paths through intermediate tokens:
+
+```
+Order: Sell USDC for RARE_TOKEN
+↓
+Path: USDC → WETH → RARE_TOKEN
+      (Uniswap)  (Balancer)
+```
+
+### 4. Partial Fill Optimization
+
+For limit orders, finds optimal fill amount:
+
+```
+Limit Order: Sell up to 10 WETH for ≥20000 USDC
+
+Solver tries:
+- 1 WETH → Check price
+- 2 WETH → Check price
+- ... up to max_partial_attempts
+
+Selects fill amount with best surplus
+```
+
+## Route Finding Algorithms
+
+### Base Token Strategy
+
+From `crates/solvers/src/infra/config.rs`:
+
+```rust
+pub struct Config {
+    pub weth: eth::WethAddress,
+    pub base_tokens: Vec<eth::TokenAddress>,
+    pub max_hops: usize,
+    pub max_partial_attempts: usize,
+    pub solution_gas_offset: eth::Gas,
+    pub native_token_price_estimation_amount: eth::U256,
+    pub uni_v3_node_url: Option<Url>,
+}
+```
+
+**Base tokens** are high-liquidity intermediaries:
+
+```toml
+base-tokens = [
+    "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # WETH (always included)
+    "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",  # USDC
+    "0x6B175474E89094C44Da98b954EedeAC495271d0F",  # DAI
+]
+```
+
+### Path Exploration
+
+For token pair `(A, B)`, solver explores:
+
+1. **Direct routes**: `A → B` on each liquidity source
+2. **1-hop routes**: `A → base_token → B`
+3. **2-hop routes**: `A → base_token_1 → base_token_2 → B`
+4. ... up to `max_hops`
+
+<Warning>
+Increasing `max_hops` improves price discovery but exponentially increases computation time.
+</Warning>
+
+### Gas Accounting
+
+Solver accounts for execution costs:
+
+```rust
+/// Units of gas added to the trade route estimate
+/// to arrive at a full settlement gas estimate.
+solution_gas_offset: i64,
+```
+
+Default is ~106,391 gas (settlement overhead).
+
+## External Solver Integration
+
+The Driver can integrate external solvers via HTTP API:
+
+### Solver Endpoint Configuration
+
+```toml
+# In driver config
+[[solver]]
+name = "external-solver"
+endpoint = "http://solver.example.com:7872"
+relative-slippage = "0.1"
+account = "0x..."
+```
+
+### API Interface
+
+External solvers must implement:
+
+#### POST /solve
+
+**Request:**
+```json
+{
+  "id": "123456",
+  "orders": [
+    {
+      "uid": "0xabc...",
+      "sellToken": "0x...",
+      "buyToken": "0x...",
+      "sellAmount": "1000000000000000000",
+      "buyAmount": "2000000000",
+      "kind": "sell",
+      "partiallyFillable": false
+    }
+  ],
+  "liquidity": [
+    {
+      "kind": "uniswapV2",
+      "tokens": ["0x...", "0x..."],
+      "reserves": ["1000000000", "2000000000"]
+    }
+  ]
+}
+```
+
+**Response:**
+```json
+{
+  "solutions": [
+    {
+      "id": "1",
+      "trades": [
+        {
+          "order": "0xabc...",
+          "executedAmount": "1000000000000000000"
+        }
+      ],
+      "interactions": [
+        {
+          "kind": "uniswapV2Swap",
+          "tokenIn": "0x...",
+          "tokenOut": "0x...",
+          "amountIn": "1000000000000000000"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Request Headers
+
+Pass custom headers to solver:
+
+```toml
+[solver.request-headers]
+authorization = "Bearer SECRET_TOKEN"
+x-api-key = "YOUR_API_KEY"
+```
+
+### Response Limits
+
+Control response size:
+
+```toml
+response-size-limit-max-bytes = 30000000  # 30MB
+```
+
+## Configuration Options
+
+### Command-Line Arguments
+
+From `crates/solvers/src/infra/cli.rs`:
+
+| Argument | Environment Variable | Default | Description |
+|----------|---------------------|---------|-------------|
+| `--addr` | `ADDR` | `127.0.0.1:7872` | HTTP server address |
+| `--log` | `LOG` | `warn,solvers=debug` | Log filter |
+| `--use-json-logs` | `USE_JSON_LOGS` | `false` | JSON log format |
+| `baseline --config` | `CONFIG` | Required | Path to config TOML |
+
+### Configuration File
+
+Example baseline solver config from `crates/solvers/config/example.baseline.toml`:
+
+```toml
+chain-id = "1"  # Ethereum mainnet
+# Alternatively: weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+
+base-tokens = []
+max-hops = 0
+max-partial-attempts = 5
+native-token-price-estimation-amount = "100000000000000000"  # 0.1 ETH
+# solution-gas-offset = 106391  # Optional override
+```
+
+**Configuration parameters:**
+
+<ParamField path="chain-id" type="string" required>
+  Chain ID for WETH contract lookup (1=mainnet, 100=gnosis, etc.)
+</ParamField>
+
+<ParamField path="weth" type="string">
+  Manual WETH address override (use instead of chain-id)
+</ParamField>
+
+<ParamField path="base-tokens" type="array">
+  Additional base tokens for routing (WETH always included)
+</ParamField>
+
+<ParamField path="max-hops" type="integer" default="0">
+  Maximum route length. 0 = direct only, 1 = one intermediate token, etc.
+</ParamField>
+
+<ParamField path="max-partial-attempts" type="integer" default="5">
+  Number of fill amounts to try for partial-fill orders
+</ParamField>
+
+<ParamField path="native-token-price-estimation-amount" type="string" default="0.1 ETH">
+  Amount of native token used for price estimation
+</ParamField>
+
+<ParamField path="solution-gas-offset" type="integer" default="106391">
+  Gas overhead added to route gas estimates
+</ParamField>
+
+<ParamField path="uni-v3-node-url" type="string">
+  Optional: Ethereum node for Uniswap V3 liquidity (RPC-based)
+</ParamField>
+
+## Running the Service
+
+### Standalone Solver
+
+Run baseline solver independently:
+
+<Steps>
+  <Step title="Create Configuration">
+    Create `solver-config.toml`:
+    ```toml
+    chain-id = "1"
+    base-tokens = [
+        "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",  # USDC
+        "0x6B175474E89094C44Da98b954EedeAC495271d0F",  # DAI
+    ]
+    max-hops = 2
+    max-partial-attempts = 5
+    native-token-price-estimation-amount = "100000000000000000"
+    ```
+  </Step>
+  
+  <Step title="Start Solver">
+    ```bash
+    cargo run --bin solvers -- \
+      --addr 127.0.0.1:7872 \
+      baseline --config /path/to/solver-config.toml
+    ```
+  </Step>
+  
+  <Step title="Test">
+    Verify it's running:
+    ```bash
+    curl http://127.0.0.1:7872/metrics
+    ```
+  </Step>
+</Steps>
+
+### With Driver
+
+Configure driver to use the solver:
+
+```toml
+# driver-config.toml
+[[solver]]
+name = "baseline"
+endpoint = "http://127.0.0.1:7872"
+relative-slippage = "0.05"
+account = "0x0000000000000000000000000000000000000000000000000000000000000001"
+merge-solutions = true
+```
+
+Start both services:
+
+```bash
+# Terminal 1: Solver
+cargo run --bin solvers -- baseline --config solver-config.toml
+
+# Terminal 2: Driver
+cargo run --bin driver -- --config driver-config.toml --ethrpc $RPC_URL
+```
+
+### Docker Deployment
+
+```dockerfile
+FROM ghcr.io/cowprotocol/services:latest
+
+COPY solver-config.toml /config.toml
+
+EXPOSE 7872
+
+CMD ["solvers", \
+     "--addr", "0.0.0.0:7872", \
+     "baseline", \
+     "--config", "/config.toml"]
+```
+
+## Algorithm Tuning
+
+### Route Quality vs Speed
+
+Balance solution quality against computation time:
+
+<CardGroup cols={2}>
+  <Card title="Fast" icon="rabbit">
+    ```toml
+    max-hops = 0
+    max-partial-attempts = 3
+    base-tokens = []  # Direct trades only
+    ```
+    Best for high-frequency auctions
+  </Card>
+  
+  <Card title="Optimal" icon="trophy">
+    ```toml
+    max-hops = 2
+    max-partial-attempts = 10
+    base-tokens = ["0x...", "0x..."]  # Multiple bases
+    ```
+    Best for maximizing surplus
+  </Card>
+</CardGroup>
+
+### Token-Specific Optimization
+
+For tokens with poor liquidity, increase exploration:
+
+```toml
+max-hops = 3  # More routing options
+base-tokens = [
+    "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # WETH
+    "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",  # USDC
+    "0x6B175474E89094C44Da98b954EedeAC495271d0F",  # DAI
+    "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",  # WBTC
+]
+```
+
+### Partial Fill Tuning
+
+For limit-heavy markets:
+
+```toml
+max-partial-attempts = 15  # Try more fill amounts
+```
+
+<Tip>
+Monitor solver latency in logs. If consistently hitting deadline, reduce `max-hops` or `max-partial-attempts`.
+</Tip>
+
+## Monitoring and Debugging
+
+### Metrics
+
+Prometheus metrics available at `/metrics`:
+
+- `solver_computation_time_seconds` - Time to compute solutions
+- `solver_solutions_found` - Number of solutions per auction
+- `solver_routes_explored` - Paths evaluated
+- `solver_partial_fills_attempted` - Partial fill calculations
+
+### Logging
+
+Enable detailed solver logs:
+
+```bash
+export LOG="warn,solvers=debug,solver=trace"
+```
+
+Key log events:
+- Route discovery progress
+- Solution scoring
+- Partial fill attempts
+- Performance timings
+
+### Profiling
+
+For performance analysis:
+
+```bash
+# Enable heap profiling (jemalloc)
+export MALLOC_CONF=prof:true,prof_prefix:jeprof.out
+
+cargo run --bin solvers -- baseline --config config.toml
+```
+
+## Advanced Features
+
+### Uniswap V3 Integration
+
+Enable RPC-based Uniswap V3 liquidity:
+
+```toml
+uni-v3-node-url = "https://mainnet.infura.io/v3/YOUR_KEY"
+```
+
+<Warning>
+Uniswap V3 integration requires direct RPC access and may slow down solving. Use for better price discovery when needed.
+</Warning>
+
+### Solution Merging
+
+Driver can merge multiple solutions from the same solver:
+
+```toml
+# In driver config
+[[solver]]
+merge-solutions = true  # Combine non-conflicting solutions
+```
+
+Useful when solver generates multiple independent routes.
+
+### Custom Solver Strategies
+
+Implement custom solving logic by:
+
+1. Creating new solver binary
+2. Implementing `/solve` API endpoint
+3. Returning solutions in standard format
+4. Configuring in driver
+
+See solver API interface section for details.
+
+## Performance Considerations
+
+### Computation Complexity
+
+Route exploration is exponential in `max-hops`:
+
+- `max-hops = 0`: O(n) routes (n = liquidity sources)
+- `max-hops = 1`: O(n * b) routes (b = base tokens)
+- `max-hops = 2`: O(n * b²) routes
+
+**Recommendation:** Start with `max-hops = 1` and increase only if needed.
+
+### Memory Usage
+
+Partial fill optimization creates solution copies:
+
+```toml
+max-partial-attempts = 5  # 5x memory per limit order
+```
+
+For auctions with many limit orders, consider reducing this value.
+
+### Deadline Management
+
+Ensure solver completes before driver deadline:
+
+```
+Driver deadline: 15s
+Solver target:   <12s (20% buffer)
+```
+
+## Troubleshooting
+
+### No Solutions Found
+
+Check:
+- Liquidity data is present in auction
+- Orders are within slippage bounds
+- Base tokens configured correctly
+- `max-hops` allows necessary routing
+
+### Solver Timeout
+
+Reduce computation:
+```toml
+max-hops = 0  # Simplify routes
+max-partial-attempts = 3  # Fewer iterations
+```
+
+### Poor Quality Solutions
+
+Increase exploration:
+```toml
+max-hops = 2  # More routing options
+base-tokens = [...]  # Add more intermediate tokens
+```
+
+### High Memory Usage
+
+Limit partial fill attempts:
+```toml
+max-partial-attempts = 3  # Reduce solution copies
+```
+
+## Related Services
+
+- [Driver](/services/driver) - Handles liquidity fetching and execution
+- [Autopilot](/services/autopilot) - Distributes auctions to solvers
+- [Orderbook](/services/orderbook) - Source of orders
+
+## Further Reading
+
+- [CoW Protocol Solver Specification](https://docs.cow.fi/)
+- [Batch Auction Mechanism](https://docs.cow.fi/)
+- [Coincidence of Wants](https://docs.cow.fi/)

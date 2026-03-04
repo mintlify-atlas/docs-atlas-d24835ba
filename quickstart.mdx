@@ -1,80 +1,388 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Get CoW Protocol Services running locally in minutes"
 ---
 
-## Get started in three steps
+## Overview
 
-Get your documentation site running locally and make your first customization.
+This quickstart guide will help you launch a complete local CoW Protocol environment using Docker Compose. You'll have a full stack including orderbook, autopilot, driver, solver, and a forked blockchain ready for testing and development.
 
-### Step 1: Set up your local environment
+<Info>
+  The playground runs in **fork mode**, meaning it forks a live network (like Ethereum mainnet) using a local Anvil node. This gives you access to real token contracts and liquidity while maintaining an isolated testing environment.
+</Info>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+## Prerequisites
+
+Before you begin, ensure you have the following installed:
+
+<Steps>
+  <Step title="Docker & Docker Compose">
+    Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) or Docker Engine with Docker Compose plugin.
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    Verify installation:
+    ```bash
+    docker --version
+    docker compose version
+    ```
+  </Step>
+
+  <Step title="Rust Toolchain (Optional)">
+    Only needed if you want to modify and rebuild the services locally. Install via [rustup](https://rustup.rs/):
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    rustup toolchain install nightly
+    ```
+  </Step>
 
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+  <Step title="RPC Endpoint">
+    You'll need an Ethereum RPC endpoint. For optimal performance, use a local node like [Reth](https://reth.rs/).
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    Alternatively, use a provider like:
+    - [Alchemy](https://www.alchemy.com/)
+    - [Infura](https://www.infura.io/)
+    - [Tenderly](https://tenderly.co/)
+    - Public endpoints from [Chainlist](https://chainlist.org/)
+    
+    <Warning>
+      RPC demand is very high. Free tier RPC endpoints may rate-limit or perform poorly. A local node or paid plan is strongly recommended for the best experience.
+    </Warning>
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Setup Instructions
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
+  <Step title="Clone the Repository">
+    ```bash
+    git clone https://github.com/cowprotocol/services.git
+    cd services
+    ```
+  </Step>
 
-### Step 3: Go live
+  <Step title="Configure Environment Variables">
+    Copy the example environment file and edit it with your RPC endpoint:
+    
+    ```bash
+    cd playground
+    cp .env.example .env
+    ```
+    
+    Edit `.env` and set your RPC URL:
+    
+    ```bash .env
+    ENV=local
+    ETH_RPC_URL=wss://mainnet.gateway.tenderly.co  # Replace with your RPC
+    ACCOUNT_BALANCES=max
+    POSTGRES_USER=postgres
+    POSTGRES_PASSWORD=123
+    TOML_TRACE_ERROR=1
+    CHAIN=1  # 1=Mainnet, 100=Gnosis, 42161=Arbitrum, 8453=Base
+    SOURCIFY_MODE=cloud
+    ```
+    
+    <Info>
+      **Chain IDs**: Mainnet (1), Gnosis (100), Arbitrum (42161), Base (8453), Polygon (137)
+    </Info>
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Launch the Playground">
+    Start all services with Docker Compose:
+    
+    ```bash
+    docker compose -f docker-compose.fork.yml up --build
+    ```
+    
+    <Tabs>
+      <Tab title="Linux">
+        Use the standard fork compose file with live reload:
+        ```bash
+        docker compose -f docker-compose.fork.yml up --build
+        ```
+      </Tab>
+      <Tab title="macOS / Windows">
+        Use the non-interactive version for better performance:
+        ```bash
+        docker compose -f docker-compose.non-interactive.yml up --build
+        ```
+        <Note>
+          Due to Docker mount performance on non-Linux platforms, the non-interactive version disables live reload to avoid slow builds.
+        </Note>
+      </Tab>
+    </Tabs>
+    
+    **Limit Services (Optional)**
+    
+    You can start only specific services:
+    ```bash
+    docker compose -f docker-compose.fork.yml up --build driver autopilot orderbook
+    ```
+    
+    The first build will take several minutes as it compiles all Rust services.
+  </Step>
 
-## Next steps
+  <Step title="Wait for Services to Start">
+    Monitor the logs until you see:
+    
+    - `orderbook` - "Starting API server on 0.0.0.0:80"
+    - `autopilot` - "Starting autopilot"
+    - `driver` - "Starting driver"
+    - `baseline` - "Solver ready"
+    
+    The services will automatically watch for code changes and rebuild when needed (Linux only).
+  </Step>
+</Steps>
 
-Now that you have your docs running, explore these key features:
+## Access Services
+
+Once the playground is running, you can access the following services:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="CoW Swap UI" icon="arrow-right-arrow-left" href="http://localhost:8000">
+    **http://localhost:8000**
+    
+    The main trading interface for placing orders
+  </Card>
+  
+  <Card title="CoW Explorer" icon="magnifying-glass" href="http://localhost:8001">
+    **http://localhost:8001**
+    
+    View transaction history and order status
+  </Card>
+  
+  <Card title="Orderbook API" icon="book" href="http://localhost:8080">
+    **http://localhost:8080**
+    
+    HTTP API for order submission and queries
+  </Card>
+  
+  <Card title="Adminer (Database UI)" icon="database" href="http://localhost:8082">
+    **http://localhost:8082**
+    
+    Browse the PostgreSQL database
+    
+    - **Server**: postgres
+    - **User**: postgres
+    - **Password**: 123
+    - **Database**: api
+  </Card>
+  
+  <Card title="Otterscan (Block Explorer)" icon="cube" href="http://localhost:8003">
+    **http://localhost:8003**
+    
+    Local block explorer with transaction traces
+  </Card>
+  
+  <Card title="Anvil RPC" icon="ethereum">
+    **http://localhost:8545**
+    
+    Local forked Ethereum node endpoint
+  </Card>
 </CardGroup>
 
+## Configure Your Wallet
+
+To interact with CoW Swap, configure your web3 wallet to use the local network:
+
+<Tabs>
+  <Tab title="Rabby Wallet (Recommended)">
+    1. Install [Rabby Wallet](https://rabby.io/)
+    2. Add a custom network:
+       - **RPC URL**: `http://localhost:8545`
+       - **Chain ID**: `1` (or your configured chain)
+    3. Import a test account using one of the private keys below
+    4. Connect to CoW Swap at http://localhost:8000
+  </Tab>
+  
+  <Tab title="MetaMask">
+    MetaMask doesn't allow changing the mainnet RPC in the UI. Use the browser console:
+    
+    ```javascript
+    await window.ethereum.request({
+      method: 'wallet_addEthereumChain',
+      params: [{
+        chainId: '0x1',
+        chainName: 'Local Network (Mainnet)',
+        rpcUrls: ['http://localhost:8545'],
+        nativeCurrency: {
+          name: "Ethereum",
+          symbol: "ETH",
+          decimals: 18,
+        },
+      }],
+    });
+    ```
+    
+    Then import a test account private key.
+  </Tab>
+</Tabs>
+
+### Test Accounts
+
+The playground uses a well-known test mnemonic. All accounts start with **10,000 ETH**:
+
+```
+Mnemonic: test test test test test test test test test test test junk
+Derivation: m/44'/60'/0'/0/
+```
+
+**Private Keys:**
+```
+(0) 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+(1) 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+(2) 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a
+(3) 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6
+```
+
+<Warning>
+  **NEVER use these accounts on real networks!** These are publicly known test keys for local development only.
+</Warning>
+
+## Submit Your First Order
+
+<Steps>
+  <Step title="Wrap ETH to WETH">
+    CoW Protocol trades ERC-20 tokens. Wrap some ETH first:
+    
+    1. Go to http://localhost:8000
+    2. Connect your wallet (select the local network)
+    3. Click "Wrap" in the interface
+    4. Wrap some ETH (e.g., 1 ETH)
+  </Step>
+
+  <Step title="Place a Swap Order">
+    1. Select tokens to swap (e.g., WETH → USDC)
+    2. Enter an amount
+    3. Review the quote from the orderbook
+    4. Sign and submit the order
+    5. Wait for the order to be included in an auction
+  </Step>
+
+  <Step title="Monitor the Auction">
+    Watch the service logs to see the order lifecycle:
+    
+    ```bash
+    # In the terminal where docker compose is running
+    # You'll see logs from autopilot, driver, and baseline
+    ```
+    
+    - **Orderbook**: Receives and validates the order
+    - **Autopilot**: Includes the order in the next auction (~12-15 seconds)
+    - **Driver + Solver**: Compute the best execution
+    - **Driver**: Submits the winning solution on-chain
+    - **Anvil**: Mines the settlement transaction
+  </Step>
+
+  <Step title="View in Explorer">
+    Check the settlement in:
+    
+    - **CoW Explorer**: http://localhost:8001
+    - **Otterscan**: http://localhost:8003 (view full transaction traces)
+  </Step>
+</Steps>
+
+## Resetting the Playground
+
+To reset the entire environment:
+
+<Steps>
+  <Step title="Stop and Remove Containers">
+    ```bash
+    docker compose -f docker-compose.fork.yml down --remove-orphans --volumes
+    ```
+  </Step>
+
+  <Step title="Reset Your Wallet">
+    Clear pending transactions to avoid nonce issues:
+    
+    - **Rabby**: Settings → "Clear pending" (More section)
+    - **MetaMask**: Settings → Advanced → [Reset Account](https://support.metamask.io/hc/en-us/articles/360015488891)
+  </Step>
+
+  <Step title="Restart">
+    ```bash
+    docker compose -f docker-compose.fork.yml up --build
+    ```
+  </Step>
+</Steps>
+
+## Switching Networks
+
+To test on a different network (e.g., Gnosis Chain):
+
+1. Edit `playground/.env`:
+   ```bash
+   ETH_RPC_URL=https://rpc.gnosischain.com  # Or your Gnosis RPC
+   CHAIN=100
+   ```
+
+2. Reset and restart:
+   ```bash
+   docker compose -f docker-compose.fork.yml down --remove-orphans --volumes
+   docker compose -f docker-compose.fork.yml up --build
+   ```
+
+3. Update your wallet to the new chain ID
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Learn how the services work together
+  </Card>
+  
+  <Card title="API Reference" icon="book" href="/api/orderbook">
+    Explore the Orderbook API
+  </Card>
+  
+  <Card title="Development Guide" icon="code" href="/development/setup">
+    Set up for service development
+  </Card>
+  
+  <Card title="Testing" icon="flask" href="/development/testing">
+    Run unit and E2E tests
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Services fail to start">
+    - Check that Docker has enough resources (at least 4GB RAM)
+    - Verify your RPC endpoint is accessible
+    - Look for error messages in the logs
+    - Try rebuilding: `docker compose -f docker-compose.fork.yml up --build --force-recreate`
+  </Accordion>
+  
+  <Accordion title="Slow compilation on macOS/Windows">
+    Use the non-interactive compose file:
+    ```bash
+    docker compose -f docker-compose.non-interactive.yml up --build
+    ```
+    This disables live reload which can be slow on non-Linux platforms.
+  </Accordion>
+  
+  <Accordion title="Orders not settling">
+    - Check that you wrapped ETH to WETH first
+    - Ensure your token has sufficient balance and approval
+    - Watch the autopilot logs for auction creation
+    - Verify the solver found a valid solution
+  </Accordion>
+  
+  <Accordion title="RPC rate limiting">
+    If you see RPC errors in the logs:
+    - Use a local node (Reth, Geth, etc.) for best performance
+    - Upgrade to a paid RPC plan
+    - Reduce the RPC load by disabling some services
+  </Accordion>
+  
+  <Accordion title="Wallet nonce issues">
+    After resetting the playground, always reset your wallet's pending transactions:
+    - Rabby: "Clear pending"
+    - MetaMask: "Reset Account"
+  </Accordion>
+</AccordionGroup>
+
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  For more detailed development instructions, see the [Development Setup](/development/setup) guide.
 </Note>

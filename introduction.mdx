@@ -1,0 +1,149 @@
+---
+title: "Introduction to CoW Protocol Services"
+description: "Backend services powering CoW Protocol's batch auction trading on Ethereum and other EVM networks"
+---
+
+## What is CoW Protocol Services?
+
+CoW Protocol Services is the backend infrastructure that powers [CoW Protocol](https://cow.fi/), a decentralized trading protocol that uses batch auctions to provide MEV protection and better prices for traders. This repository contains the core Rust-based services that handle order validation, auction management, solution computation, and settlement execution across multiple EVM networks.
+
+The services coordinate to create a trustless, decentralized exchange where orders are batched together and settled using the best available liquidity sources, including AMMs, aggregators, and direct peer-to-peer Coincidence of Wants (CoW) matches.
+
+## Key Benefits
+
+<CardGroup cols={2}>
+  <Card title="MEV Protection" icon="shield-check">
+    Batch auctions protect traders from frontrunning and sandwich attacks by executing all orders at uniform clearing prices
+  </Card>
+  <Card title="Best Execution" icon="chart-line">
+    Competition between solvers ensures the best possible prices by sourcing liquidity from multiple venues
+  </Card>
+  <Card title="Gasless Trading" icon="gas-pump">
+    Solvers pay gas costs upfront, enabling efficient batching and reducing per-order transaction costs
+  </Card>
+  <Card title="CoW Matches" icon="handshake">
+    Direct peer-to-peer settlement when buy and sell orders overlap, eliminating the need for external liquidity
+  </Card>
+</CardGroup>
+
+## Multi-Chain Support
+
+CoW Protocol Services runs on multiple EVM-compatible networks:
+
+- **Ethereum Mainnet** - The primary deployment with the deepest liquidity
+- **Gnosis Chain** - Low-cost transactions with fast finality
+- **Arbitrum One** - Layer 2 scaling with lower fees
+- **Base** - Coinbase's Layer 2 network
+- **Polygon** - Alternative Layer 2 with broad adoption
+- **BNB Chain** - Binance's smart contract platform
+- **And more** - Linea, Ink, Sepolia testnet
+
+Each network deployment operates independently with its own orderbook, auctions, and settlement infrastructure.
+
+## Core Features
+
+### Order Management
+
+- **Flexible Order Types**: Market orders, limit orders, partially fillable orders, and more
+- **EIP-712 Signed Orders**: Off-chain order signing without on-chain gas costs
+- **Order Validation**: Real-time checks for balance, approval, and order viability
+- **Order Persistence**: PostgreSQL-backed storage with efficient querying
+
+### Auction Mechanism
+
+- **Periodic Auctions**: New auctions every ~12-15 seconds (moving toward per-block auctions)
+- **Solver Competition**: Multiple solvers compete to provide the best execution
+- **Solution Ranking**: Automated selection based on execution quality and gas costs
+- **Fair Settlement**: All orders in a batch receive uniform clearing prices
+
+### Liquidity Aggregation
+
+- **AMM Integration**: Uniswap, Balancer, Curve, and other DEX protocols
+- **Aggregator APIs**: 1inch, 0x, and other liquidity sources
+- **CoW Discovery**: Automatically matches opposing orders for direct settlement
+- **Custom Solvers**: External solver partners can implement custom routing strategies
+
+## System Components
+
+CoW Protocol Services consists of four main service components:
+
+<CardGroup cols={2}>
+  <Card title="Orderbook" icon="book" href="/services/orderbook">
+    HTTP API for order submission, quotes, and order status queries. Validates and persists orders to PostgreSQL.
+  </Card>
+  <Card title="Autopilot" icon="plane" href="/services/autopilot">
+    The protocol driver that manages auction lifecycle, cuts new auctions, sends them to solvers, and ranks solutions.
+  </Card>
+  <Card title="Driver" icon="steering-wheel" href="/services/driver">
+    Handles liquidity collection, solution encoding, simulation, and on-chain submission. Co-located with solver engines.
+  </Card>
+  <Card title="Solver" icon="puzzle" href="/services/solver">
+    Optimization engines that compute optimal routing and matching. Can be internal (baseline) or external APIs.
+  </Card>
+</CardGroup>
+
+## Architecture Overview
+
+The services work together in a coordinated flow:
+
+1. **Users** submit signed orders to the **Orderbook** via the HTTP API
+2. **Autopilot** periodically creates auctions with valid orders and sends them to solvers
+3. **Drivers** fetch liquidity, solvers compute optimal solutions
+4. **Autopilot** ranks solutions and selects the winner
+5. **Driver** simulates and submits the winning solution to the settlement contract
+6. **Settlement Contract** executes trades atomically on-chain
+
+For a detailed architecture diagram and component interactions, see the [Architecture](/architecture) page.
+
+## Technology Stack
+
+<CardGroup cols={2}>
+  <Card title="Rust" icon="rust">
+    High-performance, memory-safe systems programming
+  </Card>
+  <Card title="Tokio" icon="bolt">
+    Asynchronous runtime for concurrent operations
+  </Card>
+  <Card title="PostgreSQL" icon="database">
+    Reliable storage for orders, auctions, and settlements
+  </Card>
+  <Card title="Alloy" icon="ethereum">
+    Modern Ethereum library for blockchain interactions
+  </Card>
+</CardGroup>
+
+## API Documentation
+
+All HTTP APIs are documented with OpenAPI specifications:
+
+- [**Orderbook API**](https://api.cow.fi/docs/) - Submit orders, get quotes, query order status
+- [**Driver API**](https://docs.cow.fi/cow-protocol/reference/apis/driver) - Solver integration endpoints
+- [**Solver API**](https://docs.cow.fi/cow-protocol/reference/apis/solver) - External solver protocol
+
+## Getting Started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get a local CoW Protocol environment running in minutes with Docker Compose
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand the system design, data flow, and component interactions
+  </Card>
+  <Card title="Development" icon="code" href="/development/setup">
+    Set up your development environment and learn the testing workflow
+  </Card>
+  <Card title="API Reference" icon="book-open" href="/api/orderbook">
+    Explore the REST API endpoints for integration
+  </Card>
+</CardGroup>
+
+## Learn More
+
+- [CoW Protocol Documentation](https://docs.cow.fi/) - Protocol fundamentals and concepts
+- [GitHub Repository](https://github.com/cowprotocol/services) - Browse the source code
+- [CoW Swap](https://swap.cow.fi/) - The main user interface for CoW Protocol
+- [Example Trading Bot](https://github.com/cowprotocol/trading-bot) - Sample integration code
+
+<Note>
+  The services are licensed under **GPL-3.0-or-later**. All binaries support `--help` for comprehensive command documentation.
+</Note>

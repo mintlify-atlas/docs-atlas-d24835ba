@@ -1,0 +1,687 @@
+---
+title: "Database Setup"
+description: "PostgreSQL deployment, migrations, and management for CoW Protocol Services"
+---
+
+## Overview
+
+CoW Protocol Services use PostgreSQL as the persistent storage layer for orders, auctions, settlements, and related data. The system requires PostgreSQL 12 or newer and uses sqlx for connection pooling and query execution.
+
+## Architecture
+
+### Database-per-Network Model
+
+CoW Protocol deploys **separate databases for each blockchain network**:
+
+```
+mainnet          # Ethereum mainnet
+arbitrum-one     # Arbitrum One
+base             # Base
+gnosis (xdai)    # Gnosis Chain  
+polygon          # Polygon
+linea            # Linea
+bnb              # BNB Chain
+sepolia          # Sepolia testnet
+plasma           # Plasma
+ink              # Ink
+```
+
+This isolation:
+- Prevents cross-network data contamination
+- Allows independent scaling per network
+- Simplifies backup and recovery procedures
+- Enables network-specific performance tuning
+
+### Services and Database Access
+
+| Service | Database Access | Connection Pool Size |
+|---------|----------------|----------------------|
+| **Orderbook** | Read/Write | 10-50 (user-facing) |
+| **Autopilot** | Read/Write | 10-20 (background) |
+| **Driver** | Read-only | 5-15 (query-light) |
+| **Refunder** | Read/Write | 5-10 (low volume) |
+
+<Note>
+Multiple `orderbook` instances can run concurrently against the same database for horizontal scaling. Only one `autopilot` should run per network (leader election via PostgreSQL advisory locks).
+</Note>
+
+## PostgreSQL Requirements
+
+### Minimum Version
+
+- **PostgreSQL 12+** (PostgreSQL 14+ recommended)
+
+### Required Extensions
+
+No additional PostgreSQL extensions are required. The schema uses standard PostgreSQL features.
+
+### Resource Recommendations
+
+**Development/Testing:**
+```
+CPU: 2 cores
+Memory: 4 GB
+Storage: 50 GB SSD
+Connections: 100
+```
+
+**Production (per network):**
+```
+CPU: 4-8 cores
+Memory: 16-32 GB
+Storage: 500 GB - 2 TB NVMe SSD
+Connections: 200-500
+Replication: Recommended (read replicas for analytics)
+```
+
+<Warning>
+Database size grows with order volume and settlement history. Plan for long-term storage growth, especially on mainnet.
+</Warning>
+
+## Installation
+
+### Docker Compose (Development)
+
+The repository includes a Docker Compose setup for local development:
+
+```bash
+# Start PostgreSQL with migrations applied
+docker compose up -d
+
+# Access via psql
+PGPASSWORD=password psql -h localhost -p 5432 -U cow -d mainnet
+
+# View database with Adminer web UI
+# http://localhost:8082
+```
+
+### Standalone PostgreSQL Installation
+
+**Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install postgresql-14 postgresql-contrib
+sudo systemctl enable postgresql
+sudo systemctl start postgresql
+```
+
+**macOS:**
+```bash
+brew install postgresql@14
+brew services start postgresql@14
+```
+
+**Docker:**
+```bash
+docker run -d \
+  --name cow-postgres \
+  -e POSTGRES_USER=cow \
+  -e POSTGRES_PASSWORD=password \
+  -e POSTGRES_DB=mainnet \
+  -p 5432:5432 \
+  -v pgdata:/var/lib/postgresql/data \
+  postgres:14
+```
+
+## Database Setup
+
+### Create Database and User
+
+```sql
+-- Create user
+CREATE USER cow WITH PASSWORD 'your_secure_password';
+
+-- Create database for each network
+CREATE DATABASE mainnet OWNER cow;
+CREATE DATABASE arbitrum_one OWNER cow;
+CREATE DATABASE base OWNER cow;
+CREATE DATABASE gnosis OWNER cow;
+
+-- Grant privileges
+GRANT ALL PRIVILEGES ON DATABASE mainnet TO cow;
+GRANT ALL PRIVILEGES ON DATABASE arbitrum_one TO cow;
+GRANT ALL PRIVILEGES ON DATABASE base TO cow;
+GRANT ALL PRIVILEGES ON DATABASE gnosis TO cow;
+```
+
+### Connection Configuration
+
+**Connection String Format:**
+```
+postgresql://cow:password@localhost:5432/mainnet?sslmode=require
+```
+
+**Service Configuration:**
+```bash
+export DATABASE_URL="postgresql://cow:password@db.example.com:5432/mainnet"
+export DB_MAX_CONNECTIONS=20
+
+autopilot --db-max-connections 20
+```
+
+<Tip>
+Use SSL in production: `?sslmode=require` or `?sslmode=verify-full` with proper certificate configuration.
+</Tip>
+
+## Schema and Migrations
+
+### Migration System
+
+CoW Protocol uses **Flyway** for database migrations. Migration files are located in:
+
+```
+database/sql/
+├── V001__initial_schema.sql
+├── V002__add_app_data.sql
+├── V003__create_settlements.sql
+├── ...
+└── V104__create_composite_index.sql
+```
+
+### Migration File Naming
+
+```
+V<version>__<description>.sql
+
+V     - Version prefix (required)
+001   - Version number (zero-padded)
+__    - Separator (double underscore)
+description - Human-readable description
+.sql  - SQL file extension
+```
+
+### Applying Migrations
+
+Migrations are applied automatically when services start. The `flyway_schema_history` table tracks applied migrations.
+
+**Manual Migration (if needed):**
+
+```bash
+# Using flyway CLI
+flyway -url=jdbc:postgresql://localhost:5432/mainnet \
+       -user=cow \
+       -password=password \
+       migrate
+
+# Using psql
+psql -h localhost -U cow -d mainnet -f database/sql/V001__initial_schema.sql
+```
+
+<Warning>
+Never modify migration files after they've been applied. Create new migrations to alter the schema. Flyway validates migration checksums on startup.
+</Warning>
+
+### Migration Best Practices
+
+1. **Test migrations on a copy** - Always test on staging before production
+2. **Use transactions** - Wrap DDL in transactions where supported
+3. **Add indexes concurrently** - Use `CREATE INDEX CONCURRENTLY` to avoid locking
+4. **Backfill carefully** - Large data updates should be done manually, not in migrations
+5. **Document breaking changes** - Comment complex or breaking schema changes
+
+### Manual Migration Process
+
+For long-running migrations (> 5 minutes), apply manually:
+
+```bash
+# 1. Mark migration as manual in code (skip during deployment)
+
+# 2. Apply during maintenance window
+psql -h prod-db -U cow -d mainnet <<EOF
+BEGIN;
+-- Your migration SQL here
+CREATE INDEX CONCURRENTLY idx_orders_owner ON orders(owner);
+COMMIT;
+EOF
+
+# 3. Update flyway_schema_history manually
+psql -h prod-db -U cow -d mainnet <<EOF
+INSERT INTO flyway_schema_history (
+  installed_rank, version, description, type, 
+  script, checksum, installed_by, execution_time, success
+) VALUES (
+  (SELECT MAX(installed_rank) + 1 FROM flyway_schema_history),
+  '105', 'add_orders_owner_index', 'SQL',
+  'V105__add_orders_owner_index.sql', 0, 'manual', 0, true
+);
+EOF
+```
+
+## Database Schema
+
+For complete schema documentation, see [database/README.md](https://github.com/cowprotocol/services/blob/main/database/README.md) in the source repository.
+
+### Core Tables
+
+**Orders Storage:**
+```sql
+orders              -- All signed orders
+order_quotes        -- Quotes used for order creation  
+order_events        -- Order lifecycle events
+order_execution     -- Execution metadata and fees
+interactions        -- Pre/post-interactions for orders
+```
+
+**Auctions and Competitions:**
+```sql
+auctions                -- Current auction state
+competition_auctions    -- Historical auction data
+auction_prices          -- Native token prices per auction
+fee_policies            -- Fee policies applied to orders
+solver_competitions     -- Competition results (JSON)
+```
+
+**Settlements:**
+```sql
+settlements             -- On-chain settlement events
+settlement_executions   -- Settlement execution tracking
+trades                  -- Individual trade events
+proposed_solutions      -- Solver-submitted solutions
+reference_scores        -- Reference scores for rewards
+```
+
+**On-chain Orders:**
+```sql
+onchain_placed_orders          -- Orders placed via smart contracts
+ethflow_orders                 -- EthFlow-specific data
+ethflow_refunds                -- Refund transactions
+onchain_order_invalidations    -- On-chain invalidations
+invalidations                  -- Settlement contract invalidations
+```
+
+**JIT Orders:**
+```sql
+jit_orders                              -- Just-in-time orders settled outside auctions
+surplus_capturing_jit_order_owners      -- JIT order owners per auction
+proposed_jit_orders                     -- JIT orders in proposed solutions
+```
+
+**Metadata:**
+```sql
+app_data                  -- Full app data associated with orders
+quotes                    -- Short-lived quotes
+presignature_events       -- PreSignature smart contract events
+last_indexed_blocks       -- Event indexing progress
+cow_amms                  -- CoW AMM pool information
+```
+
+### Important Indexes
+
+```sql
+-- Order lookups
+orders_pkey (uid)
+order_owner (owner) - hash index
+order_creation_timestamp (creation_timestamp)
+orders_true_valid_to (true_valid_to)
+
+-- Settlement queries
+settlements_tx_hash (tx_hash) - hash index  
+settlements_auction_id (auction_id)
+
+-- Trade history
+trade_order_uid (order_uid, block_number, log_index)
+
+-- Auction data
+auction_prices (auction_id, token)
+```
+
+<Tip>
+Use `\d table_name` in psql to inspect indexes and constraints on any table.
+</Tip>
+
+## Connection Pooling
+
+### SQLx Configuration
+
+Services use sqlx with configurable connection pools:
+
+```rust
+use sqlx::postgres::PgPoolOptions;
+
+let pool = PgPoolOptions::new()
+    .max_connections(config.max_pool_size)
+    .connect(&database_url)
+    .await?;
+```
+
+**Configuration:**
+```bash
+--db-max-connections 20
+```
+
+### Pool Sizing Guidelines
+
+**Formula:**
+```
+Connections = ((core_count × 2) + effective_spindle_count)
+```
+
+For cloud databases:
+```
+Small workload:   5-10 connections
+Medium workload:  10-20 connections  
+High workload:    20-50 connections
+```
+
+**Monitoring:**
+```sql
+-- Active connections
+SELECT count(*) FROM pg_stat_activity WHERE datname = 'mainnet';
+
+-- Connections by state
+SELECT state, count(*) 
+FROM pg_stat_activity 
+WHERE datname = 'mainnet'
+GROUP BY state;
+```
+
+<Warning>
+Too many connections can overwhelm the database. Monitor `pg_stat_activity` and adjust pool sizes accordingly.
+</Warning>
+
+## Backup and Restore
+
+### Logical Backups with pg_dump
+
+**Full Database Backup:**
+```bash
+# Plain SQL format
+pg_dump -h localhost -U cow -d mainnet -F p -f mainnet_backup.sql
+
+# Compressed custom format (recommended)
+pg_dump -h localhost -U cow -d mainnet -F c -f mainnet_backup.dump
+
+# Directory format (parallel dump/restore)
+pg_dump -h localhost -U cow -d mainnet -F d -j 4 -f mainnet_backup_dir/
+```
+
+**Scheduled Backups:**
+```bash
+#!/bin/bash
+DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_DIR="/backups/cow"
+
+pg_dump -h localhost -U cow -d mainnet -F c -f "$BACKUP_DIR/mainnet_$DATE.dump"
+
+# Compress
+gzip "$BACKUP_DIR/mainnet_$DATE.dump"
+
+# Upload to S3
+aws s3 cp "$BACKUP_DIR/mainnet_$DATE.dump.gz" s3://cow-backups/mainnet/
+
+# Cleanup old backups (keep 7 days)
+find $BACKUP_DIR -name "mainnet_*.dump.gz" -mtime +7 -delete
+```
+
+**Restore:**
+```bash
+# From custom format
+pg_restore -h localhost -U cow -d mainnet -c mainnet_backup.dump
+
+# Parallel restore (faster)
+pg_restore -h localhost -U cow -d mainnet -j 4 -F d mainnet_backup_dir/
+```
+
+### Physical Backups with pg_basebackup
+
+```bash
+# Full physical backup
+pg_basebackup -h localhost -U replication_user -D /backup/base -F tar -z -P
+
+# Incremental with WAL archiving (configure postgresql.conf first)
+archive_mode = on
+archive_command = 'cp %p /backup/wal/%f'
+```
+
+### Point-in-Time Recovery (PITR)
+
+**Enable WAL archiving:**
+```ini
+# postgresql.conf
+wal_level = replica
+archive_mode = on  
+archive_command = 'aws s3 cp %p s3://cow-wal-archive/%f'
+archive_timeout = 300
+```
+
+**Restore to specific point:**
+```bash
+# 1. Restore base backup
+pg_basebackup -D /var/lib/postgresql/data
+
+# 2. Create recovery.signal
+touch /var/lib/postgresql/data/recovery.signal
+
+# 3. Configure postgresql.auto.conf
+restore_command = 'aws s3 cp s3://cow-wal-archive/%f %p'
+recovery_target_time = '2026-03-04 15:30:00'
+
+# 4. Start PostgreSQL (will recover to target time)
+pg_ctl start
+```
+
+<Note>
+PITR requires continuous WAL archiving. Test recovery procedures regularly.
+</Note>
+
+## Performance Tuning
+
+### PostgreSQL Configuration
+
+**postgresql.conf (production):**
+```ini
+# Memory settings
+shared_buffers = 8GB                  # 25% of RAM
+effective_cache_size = 24GB           # 75% of RAM  
+work_mem = 64MB                       # Per operation
+maintenance_work_mem = 2GB            # For VACUUM, CREATE INDEX
+
+# Write-ahead log
+wal_buffers = 16MB
+checkpoint_completion_target = 0.9
+max_wal_size = 4GB
+min_wal_size = 1GB
+
+# Query planning
+random_page_cost = 1.1                # For SSD storage
+effective_io_concurrency = 200        # For SSD/NVMe
+
+# Connections
+max_connections = 200
+
+# Autovacuum (aggressive for high churn)
+autovacuum_max_workers = 4
+autovacuum_naptime = 10s
+autovacuum_vacuum_scale_factor = 0.05
+autovacuum_analyze_scale_factor = 0.02
+```
+
+### Index Optimization
+
+**Analyze query plans:**
+```sql
+EXPLAIN (ANALYZE, BUFFERS) 
+SELECT * FROM orders WHERE owner = '\x...' AND creation_timestamp > NOW() - INTERVAL '1 day';
+```
+
+**Create covering indexes:**
+```sql
+CREATE INDEX CONCURRENTLY idx_orders_owner_covering 
+ON orders(owner) 
+INCLUDE (uid, kind, buy_amount, sell_amount, fee_amount, buy_token, sell_token);
+```
+
+**Monitor index usage:**
+```sql
+SELECT schemaname, tablename, indexname, idx_scan, idx_tup_read, idx_tup_fetch
+FROM pg_stat_user_indexes
+WHERE schemaname = 'public'
+ORDER BY idx_scan;
+```
+
+### Vacuum and Analyze
+
+**Monitor table bloat:**
+```sql
+SELECT schemaname, tablename, 
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size,
+  n_dead_tup, n_live_tup,
+  round(n_dead_tup * 100.0 / NULLIF(n_live_tup + n_dead_tup, 0), 2) AS dead_ratio
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC;
+```
+
+**Manual vacuum:**
+```sql
+-- Analyze for query planner
+ANALYZE orders;
+
+-- Vacuum to reclaim space
+VACUUM ANALYZE orders;
+
+-- Full vacuum (requires table lock, use during maintenance)
+VACUUM FULL orders;
+```
+
+## Monitoring Queries
+
+### Active Queries
+
+```sql
+SELECT pid, usename, state, query_start, 
+  NOW() - query_start AS duration,
+  LEFT(query, 100) AS query
+FROM pg_stat_activity
+WHERE state = 'active' AND datname = 'mainnet'
+ORDER BY query_start;
+```
+
+### Slow Queries
+
+**Enable logging:**
+```ini
+# postgresql.conf
+log_min_duration_statement = 1000  # Log queries > 1 second
+log_line_prefix = '%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
+```
+
+**Query slow queries:**
+```sql
+SELECT query, calls, total_exec_time, mean_exec_time, max_exec_time
+FROM pg_stat_statements
+WHERE mean_exec_time > 1000
+ORDER BY mean_exec_time DESC
+LIMIT 20;
+```
+
+<Note>
+Requires `pg_stat_statements` extension: `CREATE EXTENSION pg_stat_statements;`
+</Note>
+
+### Lock Monitoring
+
+```sql
+SELECT blocked_locks.pid AS blocked_pid,
+  blocked_activity.usename AS blocked_user,
+  blocking_locks.pid AS blocking_pid,
+  blocking_activity.usename AS blocking_user,
+  blocked_activity.query AS blocked_statement,
+  blocking_activity.query AS blocking_statement
+FROM pg_catalog.pg_locks blocked_locks
+JOIN pg_catalog.pg_stat_activity blocked_activity ON blocked_activity.pid = blocked_locks.pid
+JOIN pg_catalog.pg_locks blocking_locks 
+  ON blocking_locks.locktype = blocked_locks.locktype
+  AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database
+  AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation
+  AND blocking_locks.pid != blocked_locks.pid
+JOIN pg_catalog.pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid
+WHERE NOT blocked_locks.granted;
+```
+
+### Table Statistics
+
+```sql
+SELECT schemaname, tablename,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS total_size,
+  pg_size_pretty(pg_relation_size(schemaname||'.'||tablename)) AS table_size,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename) - pg_relation_size(schemaname||'.'||tablename)) AS index_size,
+  seq_scan, idx_scan, n_tup_ins, n_tup_upd, n_tup_del
+FROM pg_stat_user_tables
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+```
+
+## Troubleshooting
+
+### Connection Issues
+
+**Test connectivity:**
+```bash
+psql -h localhost -U cow -d mainnet -c "SELECT 1;"
+```
+
+**Check connection limits:**
+```sql
+SELECT count(*), max_conn FROM pg_stat_activity, 
+  (SELECT setting::int AS max_conn FROM pg_settings WHERE name='max_connections') mc
+GROUP BY max_conn;
+```
+
+**Connection pool exhaustion:**
+```bash
+# Increase pool size
+--db-max-connections 30
+
+# Or increase PostgreSQL max_connections
+max_connections = 300  # in postgresql.conf
+```
+
+### Migration Failures
+
+**Check migration status:**
+```sql
+SELECT * FROM flyway_schema_history ORDER BY installed_rank DESC;
+```
+
+**Fix failed migration:**
+```sql
+-- 1. Fix the issue
+-- 2. Delete failed migration entry  
+DELETE FROM flyway_schema_history WHERE success = false;
+
+-- 3. Re-run migration
+```
+
+### Slow Queries
+
+**Enable timing:**
+```sql
+\timing on
+SELECT * FROM orders WHERE owner = '\x...';
+```
+
+**Check missing indexes:**
+```sql
+SELECT schemaname, tablename, attname, n_distinct, correlation
+FROM pg_stats
+WHERE schemaname = 'public' AND tablename = 'orders'
+ORDER BY abs(correlation) DESC;
+```
+
+## Best Practices
+
+1. **One database per network** - Never share databases across chains
+2. **Regular backups** - Automated daily backups with S3 storage
+3. **Monitor connection pools** - Track usage and adjust sizing
+4. **Index strategically** - Create covering indexes for hot queries
+5. **Vacuum regularly** - Let autovacuum run, manual vacuum for large deletes
+6. **Use read replicas** - Offload analytics queries to replicas
+7. **Test migrations** - Always test on staging before production
+8. **Monitor query performance** - Enable pg_stat_statements
+9. **Set statement timeouts** - Prevent runaway queries
+10. **Use SSL in production** - Always encrypt database connections
+
+## See Also
+
+- [Configuration](/deployment/configuration) - Service configuration and connection setup
+- [Monitoring](/deployment/monitoring) - Database monitoring and alerting
+- [Database Schema](https://github.com/cowprotocol/services/blob/main/database/README.md) - Complete schema documentation

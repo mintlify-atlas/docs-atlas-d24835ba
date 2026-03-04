@@ -1,0 +1,356 @@
+---
+title: Development Environment Setup
+description: Set up your local development environment for CoW Protocol Services
+---
+
+This guide walks you through setting up a complete development environment for CoW Protocol Services.
+
+## Prerequisites
+
+Before you begin, ensure you have the following installed:
+
+<Steps>
+  <Step title="Rust 2024 Edition">
+    Install Rust using rustup. The project uses Rust 2024 Edition.
+
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    rustup toolchain install stable --profile minimal
+    rustup toolchain install nightly --profile minimal
+    ```
+
+    Verify your installation:
+    ```bash
+    rustup --version
+    rustc --version
+    cargo --version
+    ```
+  </Step>
+
+  <Step title="Docker & Docker Compose">
+    Required for running PostgreSQL and the playground environment.
+
+    - **Docker Desktop**: [Install Docker Desktop](https://www.docker.com/products/docker-desktop)
+    - **Docker Engine** (Linux): [Install Docker Engine](https://docs.docker.com/engine/install/)
+
+    Verify installation:
+    ```bash
+    docker --version
+    docker compose version
+    ```
+  </Step>
+
+  <Step title="Foundry (anvil)">
+    Required for running forked network tests. Install Foundry which includes `anvil`:
+
+    ```bash
+    curl -L https://foundry.paradigm.xyz | bash
+    foundryup
+    ```
+
+    Verify `anvil` is available:
+    ```bash
+    anvil --version
+    ```
+
+    <Note>
+      The `anvil` binary path is configurable via the `ANVIL_COMMAND` environment variable. It defaults to `"anvil"` and must be in your PATH.
+    </Note>
+  </Step>
+
+  <Step title="cargo-nextest">
+    The project uses `cargo-nextest` for running tests (CI requirement).
+
+    ```bash
+    cargo install cargo-nextest --locked
+    ```
+
+    <Warning>
+      Do not use `cargo test` - always use `cargo nextest run`. The CI uses nextest and handles global state differently, which can cause tests to fail with `cargo test`.
+    </Warning>
+  </Step>
+
+  <Step title="Just (Optional but Recommended)">
+    The project includes a `Justfile` with convenient commands.
+
+    ```bash
+    cargo install just
+    ```
+
+    View available commands:
+    ```bash
+    just --list
+    ```
+  </Step>
+
+  <Step title="Tombi (Optional)">
+    For TOML file formatting:
+
+    ```bash
+    cargo install tombi
+    ```
+
+    Editor extensions available for [VS Code](https://marketplace.visualstudio.com/items?itemName=tombi-toml.tombi), [Zed](https://tombi-toml.github.io/tombi/docs/editors/zed-extension), and [JetBrains](https://plugins.jetbrains.com/plugin/28017-tombi).
+  </Step>
+</Steps>
+
+## Clone the Repository
+
+```bash
+git clone https://github.com/cowprotocol/services.git
+cd services
+```
+
+## Install Dependencies
+
+Rust dependencies are managed through `Cargo.toml`. They'll be downloaded automatically during the first build:
+
+```bash
+cargo build
+```
+
+<Note>
+The first build will take some time as it downloads and compiles all dependencies. Subsequent builds will be much faster thanks to cargo's incremental compilation.
+</Note>
+
+## Database Setup
+
+Many tests and local development require PostgreSQL.
+
+<Steps>
+  <Step title="Start PostgreSQL with Docker Compose">
+    ```bash
+    docker compose up -d
+    ```
+
+    This will:
+    - Start a PostgreSQL container on port `5432`
+    - Automatically run database migrations
+  </Step>
+
+  <Step title="Verify Database Connection">
+    ```bash
+    docker compose ps
+    ```
+
+    You should see the `db` container running.
+  </Step>
+
+  <Step title="Access Database (Optional)">
+    Using the included Adminer web interface:
+    ```bash
+    docker compose up -d adminer
+    ```
+
+    Then visit: http://localhost:8082
+  </Step>
+</Steps>
+
+## Environment Variables
+
+### For Forked Network Tests
+
+To run E2E tests against forked networks, you need RPC endpoints:
+
+```bash .env
+export FORK_URL_MAINNET="https://mainnet.infura.io/v3/YOUR_KEY"
+export FORK_URL_GNOSIS="https://rpc.gnosischain.com"
+```
+
+<Note>
+Refer to [Chainlist](https://chainlist.org/chain/1) for Mainnet RPCs and [Gnosis RPC Providers](https://docs.gnosischain.com/tools/RPC%20Providers/) for Gnosis RPCs.
+</Note>
+
+### For Playground Development
+
+See the [Playground guide](/development/playground) for playground-specific environment configuration.
+
+## Building the Services
+
+<CodeGroup>
+```bash Build all binaries
+cargo build
+```
+
+```bash Build in release mode
+cargo build --release
+```
+
+```bash Build specific service
+cargo build -p orderbook
+cargo build -p autopilot
+cargo build -p driver
+```
+
+```bash Check without building
+cargo check --workspace
+```
+</CodeGroup>
+
+<Note>
+The workspace includes 25+ crates. Main binaries:
+- `orderbook` - HTTP API for orders
+- `autopilot` - Auction manager
+- `driver` - Solution execution
+- `solvers` - Internal solver engine
+- `refunder` - Handles refunds
+</Note>
+
+## IDE Setup Recommendations
+
+### Visual Studio Code
+
+**Recommended Extensions:**
+- [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer) - Rust language support
+- [Even Better TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml) - TOML support
+- [Tombi](https://marketplace.visualstudio.com/items?itemName=tombi-toml.tombi) - TOML formatter
+- [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb) - Debugger
+
+**Settings (.vscode/settings.json):**
+```json
+{
+  "rust-analyzer.cargo.features": "all",
+  "rust-analyzer.checkOnSave.command": "clippy",
+  "rust-analyzer.rustfmt.extraArgs": ["+nightly"],
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.formatOnSave": true
+  }
+}
+```
+
+### JetBrains IDEs (IntelliJ IDEA, RustRover, CLion)
+
+**Plugins:**
+- Rust - Official Rust plugin
+- Tombi - TOML formatting
+
+**Configure rustfmt:**
+1. Go to **Settings → Languages & Frameworks → Rust → Rustfmt**
+2. Set **Toolchain** to `nightly`
+3. Enable **Run rustfmt on Save**
+
+### Zed
+
+**Extensions:**
+- Rust (built-in)
+- [Tombi](https://tombi-toml.github.io/tombi/docs/editors/zed-extension)
+
+**Settings:**
+```json
+{
+  "languages": {
+    "Rust": {
+      "format_on_save": "on",
+      "formatter": "language_server"
+    }
+  }
+}
+```
+
+## Verify Your Setup
+
+Run these commands to ensure everything is working:
+
+<Steps>
+  <Step title="Run unit tests">
+    ```bash
+    cargo nextest run
+    ```
+    or
+    ```bash
+    just test-unit
+    ```
+  </Step>
+
+  <Step title="Run database tests">
+    Ensure PostgreSQL is running:
+    ```bash
+    docker compose up -d
+    ```
+
+    Then run:
+    ```bash
+    just test-db
+    ```
+  </Step>
+
+  <Step title="Check code formatting">
+    ```bash
+    just fmt --check
+    ```
+  </Step>
+
+  <Step title="Run clippy linter">
+    ```bash
+    just clippy
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Testing Guide" icon="vial" href="/development/testing">
+    Learn how to write and run tests
+  </Card>
+  <Card title="Playground" icon="play" href="/development/playground">
+    Set up the full local development stack
+  </Card>
+  <Card title="Contributing" icon="code-pull-request" href="/development/contributing">
+    Guidelines for contributing code
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand the system architecture
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Compilation Errors
+
+<AccordionGroup>
+  <Accordion title="Linker errors on Linux">
+    Install build essentials:
+    ```bash
+    sudo apt-get install build-essential pkg-config libssl-dev
+    ```
+  </Accordion>
+
+  <Accordion title="Linker errors on macOS">
+    Install Xcode command line tools:
+    ```bash
+    xcode-select --install
+    ```
+  </Accordion>
+
+  <Accordion title="Out of memory during compilation">
+    Reduce parallel compilation:
+    ```bash
+    cargo build -j 2
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Database Connection Issues
+
+<AccordionGroup>
+  <Accordion title="Port 5432 already in use">
+    Stop any existing PostgreSQL instance:
+    ```bash
+    # macOS
+    brew services stop postgresql
+
+    # Linux
+    sudo systemctl stop postgresql
+    ```
+  </Accordion>
+
+  <Accordion title="Permission denied errors">
+    Reset Docker volumes:
+    ```bash
+    docker compose down --volumes
+    docker compose up -d
+    ```
+  </Accordion>
+</AccordionGroup>

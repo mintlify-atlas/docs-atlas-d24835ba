@@ -1,0 +1,667 @@
+---
+title: "Driver API"
+description: "API reference for the CoW Protocol Driver service"
+---
+
+The Driver service acts as an adapter between Autopilot and solver engines. It handles liquidity collection, solution encoding, simulation, and on-chain settlement submission. The same API is exposed by both the reference driver implementation and external colocated solvers.
+
+## Overview
+
+The Driver sits between Autopilot and solver engines:
+
+```
+Autopilot
+   ↓ /solve request
+Driver
+   ↓ auction + liquidity
+Solver Engine (baseline, balancer, external API)
+   ↓ abstract solution
+Driver
+   ↓ encode calldata, simulate
+Driver
+   ↓ /settle request from autopilot
+Driver → submits to chain
+```
+
+### Responsibilities
+
+- **Liquidity Collection**: Fetches AMM pools, limit orders, and other liquidity sources
+- **Auction Translation**: Converts autopilot auction format to solver engine format
+- **Solution Encoding**: Transforms abstract solutions into settlement calldata
+- **Simulation**: Validates solutions work on-chain before submission
+- **Gas Estimation**: Computes accurate gas costs for scoring
+- **Settlement Submission**: Sends winning solutions to the blockchain
+- **Monitoring**: Tracks solution status and reports back to Autopilot
+
+---
+
+## Key Endpoints
+
+The Driver implements the solver interface expected by Autopilot.
+
+### Solve Auction
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:11000/solve" \
+  -H "Content-Type: application/json" \
+  -d @auction.json
+```
+</CodeGroup>
+
+Receives an auction from Autopilot, queries solver engine(s), and returns solutions.
+
+**Endpoint**: `POST /solve`
+
+#### Request Body
+
+<ParamField body="id" type="integer" required>
+  Unique auction identifier (incrementing)
+</ParamField>
+
+<ParamField body="orders" type="array" required>
+  Solvable orders in the auction (see Orderbook Order structure)
+</ParamField>
+
+<ParamField body="tokens" type="array" required>
+  Token information including prices and trust status
+</ParamField>
+
+<ParamField body="deadline" type="string" required>
+  ISO 8601 UTC timestamp by which solution must be returned
+</ParamField>
+
+<ParamField body="surplusCapturingJitOrderOwners" type="array">
+  Addresses whose JIT order surplus counts toward objective value
+</ParamField>
+
+#### Token Structure
+
+<Expandable title="Token Fields">
+  <ResponseField name="address" type="address">
+    Token contract address
+  </ResponseField>
+  
+  <ResponseField name="price" type="string" nullable>
+    Reference price in native token (null if no CoW orders for this token)
+  </ResponseField>
+  
+  <ResponseField name="trusted" type="boolean">
+    Whether token is trusted for buffer trading (CIP-2 internalization)
+  </ResponseField>
+</Expandable>
+
+#### Response
+
+<ResponseField name="solutions" type="array">
+  Array of computed solutions
+</ResponseField>
+
+#### Solution Structure
+
+<Expandable title="Solution Fields">
+  <ResponseField name="solutionId" type="integer">
+    Unique identifier for this solution (unique within auction)
+  </ResponseField>
+  
+  <ResponseField name="score" type="string">
+    Objective value of the solution (BigInt decimal string)
+  </ResponseField>
+  
+  <ResponseField name="submissionAddress" type="address">
+    Address that will submit the settlement transaction
+  </ResponseField>
+  
+  <ResponseField name="orders" type="object">
+    Mapping of order UID to execution details
+  </ResponseField>
+  
+  <ResponseField name="clearingPrices" type="object">
+    Mapping of token address to uniform clearing price
+  </ResponseField>
+  
+  <ResponseField name="gas" type="integer">
+    Estimated gas cost in gas units
+  </ResponseField>
+</Expandable>
+
+#### Order Execution Details
+
+<Expandable title="Executed Order Fields">
+  <ResponseField name="side" type="string">
+    Order type: `"buy"` or `"sell"`
+  </ResponseField>
+  
+  <ResponseField name="sellToken" type="address">
+    Token being sold
+  </ResponseField>
+  
+  <ResponseField name="buyToken" type="address">
+    Token being bought
+  </ResponseField>
+  
+  <ResponseField name="limitSell" type="string">
+    Maximum amount to sell
+  </ResponseField>
+  
+  <ResponseField name="limitBuy" type="string">
+    Minimum amount to buy
+  </ResponseField>
+  
+  <ResponseField name="executedSell" type="string">
+    Effective amount that left user's wallet (including fees)
+  </ResponseField>
+  
+  <ResponseField name="executedBuy" type="string">
+    Effective amount user received (after fees)
+  </ResponseField>
+</Expandable>
+
+**Example Response**:
+```json
+{
+  "solutions": [
+    {
+      "solutionId": 1,
+      "score": "1000000000000000000",
+      "submissionAddress": "0x1234...",
+      "orders": {
+        "0xabc...123": {
+          "side": "sell",
+          "sellToken": "0x6B17...",
+          "buyToken": "0xC02a...",
+          "limitSell": "1000000000000000000",
+          "limitBuy": "900000000000000000",
+          "executedSell": "1010000000000000000",
+          "executedBuy": "950000000000000000"
+        }
+      },
+      "clearingPrices": {
+        "0x6B17...": "1000000000000000000",
+        "0xC02a...": "1050000000000000000"
+      },
+      "gas": 150000
+    }
+  ]
+}
+```
+
+**Status Codes**:
+- `200`: Solutions computed
+- `400`: Invalid request
+- `500`: Internal error
+
+---
+
+### Reveal Calldata
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:11000/reveal" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "auctionId": 12345,
+    "solutionId": 1
+  }'
+```
+</CodeGroup>
+
+Reveals the settlement calldata for a previously solved auction. Used by Autopilot for shadow competition verification.
+
+**Endpoint**: `POST /reveal`
+
+#### Request Body
+
+<ParamField body="auctionId" type="integer" required>
+  Auction ID containing the solution
+</ParamField>
+
+<ParamField body="solutionId" type="integer" required>
+  Solution ID to reveal
+</ParamField>
+
+#### Response
+
+<ResponseField name="calldata" type="object">
+  Settlement calldata in two forms
+</ResponseField>
+
+<Expandable title="Calldata Fields">
+  <ResponseField name="internalized" type="string">
+    Calldata without internalized interactions (what appears on-chain). Hex string with 0x prefix.
+  </ResponseField>
+  
+  <ResponseField name="uninternalized" type="string">
+    Calldata with all internalized interactions (for simulation/verification). Hex string with 0x prefix.
+  </ResponseField>
+</Expandable>
+
+**Example Response**:
+```json
+{
+  "calldata": {
+    "internalized": "0x13d79a0b00000000...",
+    "uninternalized": "0x13d79a0b00000000..."
+  }
+}
+```
+
+**Internalization** (CIP-2):
+
+Solvers can optimize gas by using settlement contract token buffers instead of routing through AMMs. The `internalized` calldata omits these buffer trades, while `uninternalized` includes them for simulation.
+
+**Status Codes**:
+- `200`: Calldata revealed
+- `400`: Invalid request (e.g., unknown auction/solution ID)
+- `500`: Internal error
+
+---
+
+### Settle Auction
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:11000/settle" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "auctionId": 12345,
+    "solutionId": 1,
+    "submissionDeadlineLatestBlock": 19000000
+  }'
+```
+</CodeGroup>
+
+Instructs the driver to submit a winning solution on-chain. The driver encodes calldata, simulates, and broadcasts the settlement transaction.
+
+**Endpoint**: `POST /settle`
+
+#### Request Body
+
+<ParamField body="auctionId" type="integer" required>
+  Auction ID containing the solution
+</ParamField>
+
+<ParamField body="solutionId" type="integer" required>
+  Solution ID to settle
+</ParamField>
+
+<ParamField body="submissionDeadlineLatestBlock" type="integer" required>
+  Last block number in which the settlement TX can be included (typically current block + 2-3)
+</ParamField>
+
+#### Response
+
+Empty body with `200 OK` status indicates driver accepted the settlement request and will attempt submission.
+
+**Status Codes**:
+- `200`: Settlement accepted
+- `400`: Invalid request
+- `500`: Internal error
+
+#### Settlement Process
+
+1. **Encode**: Convert abstract solution to settlement calldata
+2. **Simulate**: Verify execution on-chain (using `uninternalized` calldata)
+3. **Sign**: Sign transaction with solver's private key
+4. **Submit**: Broadcast to mempool or use private RPC
+5. **Monitor**: Track transaction until confirmation or deadline
+6. **Report**: Notify Autopilot of outcome via callback
+
+---
+
+### Receive Notification
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:11000/notify" \
+  -H "Content-Type: application/json" \
+  -d '"banned"'
+```
+</CodeGroup>
+
+Receives notifications from Autopilot about solver status changes.
+
+**Endpoint**: `POST /notify`
+
+#### Request Body
+
+<ParamField body="reason" type="string" required>
+  Notification reason (currently only `"banned"`)
+</ParamField>
+
+**Status Codes**:
+- `200`: Notification received
+
+---
+
+### Get Quote
+
+<CodeGroup>
+```bash cURL
+curl "http://localhost:11000/quote?sellToken=0x6B175474E89094C44Da98b954EedeAC495271d0F&buyToken=0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2&kind=sell&amount=1000000000000000000&deadline=2024-03-04T12:00:00Z"
+```
+</CodeGroup>
+
+Provides price estimation for a single order (typically used by orderbook for quote requests).
+
+**Endpoint**: `GET /quote`
+
+#### Query Parameters
+
+<ParamField query="sellToken" type="address" required>
+  Token to sell
+</ParamField>
+
+<ParamField query="buyToken" type="address" required>
+  Token to buy
+</ParamField>
+
+<ParamField query="kind" type="string" required>
+  Quote type: `"buy"` or `"sell"`
+</ParamField>
+
+<ParamField query="amount" type="string" required>
+  Amount to buy or sell (in atoms)
+</ParamField>
+
+<ParamField query="deadline" type="string" required>
+  ISO 8601 UTC timestamp by which quote must be returned
+</ParamField>
+
+#### Response
+
+<ResponseField name="QuoteResponse" type="oneOf">
+  Either LegacyQuoteResponse, QuoteResponse, or Error
+</ResponseField>
+
+<Expandable title="LegacyQuoteResponse">
+  <ResponseField name="amount" type="string">
+    Quoted amount (sell amount for buy orders, buy amount for sell orders)
+  </ResponseField>
+  
+  <ResponseField name="interactions" type="array">
+    Interactions needed to execute the quote
+  </ResponseField>
+  
+  <ResponseField name="solver" type="address">
+    Address of the solver providing the quote
+  </ResponseField>
+  
+  <ResponseField name="gas" type="integer">
+    Estimated gas cost in gas units
+  </ResponseField>
+  
+  <ResponseField name="txOrigin" type="address">
+    Required tx.origin for simulation to pass (or null)
+  </ResponseField>
+</Expandable>
+
+<Expandable title="QuoteResponse (with JIT support)">
+  <ResponseField name="clearingPrices" type="object">
+    Uniform clearing prices for all tokens
+  </ResponseField>
+  
+  <ResponseField name="preInteractions" type="array">
+    Interactions to execute before trade
+  </ResponseField>
+  
+  <ResponseField name="interactions" type="array">
+    Main trading interactions
+  </ResponseField>
+  
+  <ResponseField name="solver" type="address">
+    Solver providing the quote
+  </ResponseField>
+  
+  <ResponseField name="gas" type="integer">
+    Estimated gas cost
+  </ResponseField>
+  
+  <ResponseField name="txOrigin" type="address">
+    Required tx.origin (or null)
+  </ResponseField>
+  
+  <ResponseField name="jitOrders" type="array">
+    Just-in-time orders included in quote
+  </ResponseField>
+</Expandable>
+
+**Status Codes**:
+- `200`: Quote computed
+- `400`: Invalid request
+- `429`: Solver too busy
+- `500`: Internal error
+
+---
+
+## Liquidity Collection
+
+The Driver collects on-chain liquidity to provide to solver engines:
+
+### Liquidity Sources
+
+1. **Constant Product Pools** (Uniswap V2 style)
+   - Token reserves, fee, router address
+   
+2. **Weighted Product Pools** (Balancer style)
+   - Token weights, reserves, scaling factors
+   - Pool ID, version
+   
+3. **Stable Pools** (Curve style)
+   - Amplification parameter
+   - Scaling factors
+   
+4. **Concentrated Liquidity** (Uniswap V3 style)
+   - Current sqrt price, liquidity
+   - Tick data (liquidity net per tick)
+   
+5. **Foreign Limit Orders** (0x style)
+   - Maker/taker tokens and amounts
+   - Fee amounts
+
+### Liquidity Object
+
+```json
+{
+  "id": "unique-id",
+  "address": "0x...",
+  "kind": "constantProduct",
+  "tokens": {
+    "0xTokenA": { "balance": "1000000000" },
+    "0xTokenB": { "balance": "2000000000" }
+  },
+  "fee": "0.003",
+  "router": "0x...",
+  "gasEstimate": "100000"
+}
+```
+
+Each liquidity source includes:
+- **id**: Unique identifier (within auction)
+- **address**: On-chain address
+- **gasEstimate**: Approximate gas cost to use this liquidity
+- **kind-specific fields**: Pool parameters
+
+---
+
+## Solution Encoding
+
+The Driver transforms abstract solver solutions into settlement calldata:
+
+### Settlement Contract Interface
+
+Calldata is constructed for the `settle()` function:
+
+```solidity
+function settle(
+    address[] calldata tokens,
+    uint256[] calldata clearingPrices,
+    GPv2Trade.Data[] calldata trades,
+    GPv2Interaction.Data[][3] calldata interactions
+) external
+```
+
+### Interaction Types
+
+1. **Pre-interactions**: Executed before trades (e.g., token approvals)
+2. **Intra-interactions**: Executed between trades (e.g., AMM swaps)
+3. **Post-interactions**: Executed after trades (e.g., unwrap WETH)
+
+### Internalization (CIP-2)
+
+When tokens are trusted, solvers can internalize trades:
+- **Skip AMM swap**: Use settlement contract buffer instead
+- **Gas Savings**: Reduces transaction cost
+- **Two Calldata Versions**:
+  - `internalized`: Omits buffer trades (on-chain)
+  - `uninternalized`: Includes buffer trades (simulation)
+
+---
+
+## Configuration
+
+Driver behavior is configured via TOML files. Key settings:
+
+### Solver Engines
+
+```toml
+[[solver]]
+name = "Baseline"
+endpoint = "http://localhost:8000/"
+relative_slippage = "0.01"
+```
+
+### Liquidity Sources
+
+```toml
+[liquidity.uniswap-v2]
+router = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+factory = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
+```
+
+### Settlement
+
+```toml
+[contracts]
+settlement = "0x9008D19f58AAbD9eD0D60971565AA8510560ab41"
+
+[submission]
+gas_price_cap = "1000000000000"  # 1000 gwei
+max_confirm_time = "30s"
+```
+
+See `example.toml` in the driver crate for full configuration options.
+
+---
+
+## Error Handling
+
+The Driver can fail at various stages:
+
+### Solve Failures
+
+- **No Liquidity**: No viable route found
+- **Solver Timeout**: Engine didn't respond in time
+- **Invalid Solution**: Solution violates constraints
+
+### Reveal Failures
+
+- **Unknown Solution**: Solution ID not found (expired cache)
+- **Encoding Error**: Cannot construct calldata
+
+### Settlement Failures
+
+- **Simulation Failed**: Transaction would revert
+- **Gas Too High**: Exceeds configured cap
+- **Deadline Passed**: Block deadline already reached
+- **Submission Failed**: RPC error or transaction dropped
+- **Revert On-Chain**: Transaction reverted after submission
+
+---
+
+## Monitoring and Metrics
+
+The Driver exposes metrics for observability:
+
+### Key Metrics
+
+- **Solve latency**: Time to compute solutions
+- **Solution count**: Number of solutions per auction
+- **Win rate**: Percentage of auctions won
+- **Gas accuracy**: Estimated vs actual gas usage
+- **Settlement success rate**: Percentage of settlements that succeed
+- **Revert reasons**: Categories of settlement failures
+
+### Logging
+
+Structured logs include:
+- Auction ID
+- Solution ID
+- Order UIDs
+- Token addresses
+- Amounts and prices
+- Gas estimates
+- Error messages
+
+---
+
+## Best Practices
+
+1. **Accurate Gas Estimates**: Critical for correct solution scoring
+2. **Fast Response Times**: Respect deadlines, account for network latency
+3. **Thorough Simulation**: Always simulate before submitting settlements
+4. **Handle Reverts Gracefully**: Log detailed error information
+5. **Monitor RPC Health**: Use multiple RPC endpoints for redundancy
+6. **Manage Private Keys Securely**: Use hardware wallets or secure key management
+7. **Set Reasonable Caps**: Configure gas price and slippage limits
+8. **Cache Liquidity**: Update liquidity periodically, not per auction
+9. **Implement Backoff**: Retry failed submissions with exponential backoff
+10. **Track Metrics**: Monitor performance and optimize bottlenecks
+
+---
+
+## Data Types
+
+See [Orderbook API](/api/orderbook) for common types. Driver-specific types:
+
+### Interaction
+
+```json
+{
+  "target": "0x...",
+  "value": "0",
+  "callData": "0x..."
+}
+```
+
+### Calldata
+
+```json
+{
+  "internalized": "0x13d79a0b...",
+  "uninternalized": "0x13d79a0b..."
+}
+```
+
+### JitOrder
+
+Just-in-time liquidity order:
+
+```json
+{
+  "sellToken": "0x...",
+  "buyToken": "0x...",
+  "sellAmount": "1000000000",
+  "buyAmount": "2000000000",
+  "executedAmount": "0",
+  "receiver": "0x...",
+  "validTo": 1234567890,
+  "side": "sell",
+  "partiallyFillable": false,
+  "sellTokenSource": "erc20",
+  "buyTokenSource": "erc20",
+  "appData": "0x...",
+  "signature": "0x...",
+  "signingScheme": "eip712"
+}
+```

@@ -1,0 +1,788 @@
+---
+title: "Solver Engine API"
+description: "API reference for CoW Protocol solver engines"
+---
+
+Solver engines provide the core optimization logic for finding optimal trade routes in CoW Protocol auctions. They receive abstract auction data from the Driver and return abstract solutions.
+
+## Overview
+
+Solver engines are pure route-finding and optimization services:
+
+```
+Driver
+  ↓ POST /solve (auction + liquidity)
+Solver Engine
+  ↓ optimization algorithm
+Solver Engine
+  ↓ abstract solution
+Driver
+```
+
+### Responsibilities
+
+- **Route Finding**: Determine optimal paths through available liquidity
+- **Order Matching**: Identify coincidence of wants between orders
+- **Price Discovery**: Compute uniform clearing prices
+- **Gas Optimization**: Balance execution cost vs quality
+- **Constraint Satisfaction**: Respect order limits, balances, and partial fill rules
+
+### Not Responsible For
+
+- Calldata encoding
+- Transaction simulation
+- Settlement submission
+- Liquidity collection
+- On-chain interactions
+
+---
+
+## Solver Types
+
+### Internal Solvers
+
+Provided by CoW Protocol:
+
+1. **Baseline**: Simple greedy solver for basic matching and routing
+2. **Balancer**: Specialized for Balancer pool routing
+3. **Legacy solvers**: Various historical implementations
+
+### External Solvers
+
+Third-party optimization services:
+
+- **1inch**: Aggregator API integration
+- **0x**: RFQ and aggregator integration
+- **ParaSwap**: Multi-source aggregation
+- **Custom**: Proprietary algorithms from solver teams
+
+---
+
+## API Specification
+
+### Solve Auction
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:8000/solve" \
+  -H "Content-Type: application/json" \
+  -d @auction.json
+```
+</CodeGroup>
+
+Receives an auction and returns one or more solutions.
+
+**Endpoint**: `POST /solve`
+
+#### Request Body
+
+<ParamField body="id" type="string">
+  Opaque auction identifier (null for non-auction requests like quotes)
+</ParamField>
+
+<ParamField body="tokens" type="object" required>
+  Mapping of token addresses to token information
+</ParamField>
+
+<ParamField body="orders" type="array" required>
+  Array of CoW Protocol orders to solve
+</ParamField>
+
+<ParamField body="liquidity" type="array" required>
+  Array of available on-chain liquidity sources
+</ParamField>
+
+<ParamField body="effectiveGasPrice" type="string" required>
+  Current gas price in Wei for scoring
+</ParamField>
+
+<ParamField body="deadline" type="string" required>
+  ISO 8601 UTC timestamp by which solution must be returned
+</ParamField>
+
+<ParamField body="surplusCapturingJitOrderOwners" type="array">
+  Addresses whose JIT order surplus counts toward score
+</ParamField>
+
+#### Token Information
+
+<Expandable title="TokenInfo Fields">
+  <ResponseField name="decimals" type="integer">
+    Token decimals (may be missing for non-standard tokens)
+  </ResponseField>
+  
+  <ResponseField name="symbol" type="string">
+    Token symbol (may be missing for non-standard tokens)
+  </ResponseField>
+  
+  <ResponseField name="referencePrice" type="string">
+    Native token price for scoring (only for tokens with CoW orders)
+  </ResponseField>
+  
+  <ResponseField name="availableBalance" type="string">
+    Settlement contract buffer balance available for this token
+  </ResponseField>
+  
+  <ResponseField name="trusted" type="boolean">
+    Whether solvers can internalize trades with this token (CIP-2)
+  </ResponseField>
+</Expandable>
+
+#### Order Structure
+
+<Expandable title="Order Fields">
+  <ResponseField name="uid" type="string">
+    56 byte order unique identifier
+  </ResponseField>
+  
+  <ResponseField name="sellToken" type="address">
+    Token being sold
+  </ResponseField>
+  
+  <ResponseField name="buyToken" type="address">
+    Token being bought
+  </ResponseField>
+  
+  <ResponseField name="sellAmount" type="string">
+    Amount to sell (remaining after partial fills)
+  </ResponseField>
+  
+  <ResponseField name="fullSellAmount" type="string">
+    Original full sell amount
+  </ResponseField>
+  
+  <ResponseField name="buyAmount" type="string">
+    Amount to buy (remaining after partial fills)
+  </ResponseField>
+  
+  <ResponseField name="fullBuyAmount" type="string">
+    Original full buy amount
+  </ResponseField>
+  
+  <ResponseField name="feePolicies" type="array">
+    Protocol fee policies applying to this order
+  </ResponseField>
+  
+  <ResponseField name="validTo" type="integer">
+    Unix timestamp expiration
+  </ResponseField>
+  
+  <ResponseField name="kind" type="string">
+    Order type: `"sell"` or `"buy"`
+  </ResponseField>
+  
+  <ResponseField name="owner" type="address">
+    Order owner address
+  </ResponseField>
+  
+  <ResponseField name="receiver" type="address">
+    Optional custom recipient
+  </ResponseField>
+  
+  <ResponseField name="partiallyFillable" type="boolean">
+    Whether order can be partially filled
+  </ResponseField>
+  
+  <ResponseField name="preInteractions" type="array">
+    Pre-hooks to execute before trade
+  </ResponseField>
+  
+  <ResponseField name="postInteractions" type="array">
+    Post-hooks to execute after trade
+  </ResponseField>
+  
+  <ResponseField name="sellTokenSource" type="string">
+    Token source: `"erc20"`, `"internal"`, or `"external"`
+  </ResponseField>
+  
+  <ResponseField name="buyTokenDestination" type="string">
+    Token destination: `"erc20"` or `"internal"`
+  </ResponseField>
+  
+  <ResponseField name="class" type="string">
+    Order class: `"market"`, `"limit"`, or `"liquidity"`
+  </ResponseField>
+  
+  <ResponseField name="appData" type="string">
+    AppData hash (32 bytes)
+  </ResponseField>
+  
+  <ResponseField name="flashloanHint" type="object">
+    Optional hint about flashloan opportunities for this order
+  </ResponseField>
+  
+  <ResponseField name="signingScheme" type="string">
+    Signature type
+  </ResponseField>
+  
+  <ResponseField name="signature" type="string">
+    Order signature
+  </ResponseField>
+</Expandable>
+
+#### Liquidity Sources
+
+See [Driver API - Liquidity Collection](/api/driver#liquidity-collection) for detailed liquidity source structures.
+
+Types include:
+- `constantProduct`: Uniswap V2 style pools
+- `weightedProduct`: Balancer weighted pools
+- `stable`: Curve stable pools
+- `concentratedLiquidity`: Uniswap V3 style pools
+- `limitOrder`: External (0x) limit orders
+
+#### Response
+
+<ResponseField name="solutions" type="array">
+  Array of proposed solutions (can be empty if no viable solution found)
+</ResponseField>
+
+#### Solution Structure
+
+<Expandable title="Solution Fields">
+  <ResponseField name="id" type="integer">
+    Unique solution identifier (unique within auction)
+  </ResponseField>
+  
+  <ResponseField name="prices" type="object">
+    Uniform clearing prices (token address → price in arbitrary denomination)
+  </ResponseField>
+  
+  <ResponseField name="trades" type="array">
+    CoW Protocol order trades included in solution
+  </ResponseField>
+  
+  <ResponseField name="preInteractions" type="array">
+    Interactions to execute before settlement
+  </ResponseField>
+  
+  <ResponseField name="interactions" type="array">
+    Main interactions (AMM swaps, etc.)
+  </ResponseField>
+  
+  <ResponseField name="postInteractions" type="array">
+    Interactions to execute after settlement
+  </ResponseField>
+  
+  <ResponseField name="gas" type="integer">
+    Estimated gas cost in gas units
+  </ResponseField>
+  
+  <ResponseField name="flashloans" type="object">
+    Optional flashloan specifications (order UID → flashloan details)
+  </ResponseField>
+</Expandable>
+
+#### Trade Types
+
+<Expandable title="Fulfillment (Regular Order)">
+  <ResponseField name="kind" type="string">
+    Always `"fulfillment"`
+  </ResponseField>
+  
+  <ResponseField name="order" type="string">
+    Order UID being filled
+  </ResponseField>
+  
+  <ResponseField name="executedAmount" type="string">
+    Amount executed (in sell token for sell orders, buy token for buy orders)
+  </ResponseField>
+  
+  <ResponseField name="fee" type="string">
+    Sell token amount taken as fee (only for limit orders, only for filled amount)
+  </ResponseField>
+</Expandable>
+
+<Expandable title="JIT Trade (Just-in-Time Order)">
+  <ResponseField name="kind" type="string">
+    Always `"jit"`
+  </ResponseField>
+  
+  <ResponseField name="order" type="object">
+    JIT order data (see JitOrder structure)
+  </ResponseField>
+  
+  <ResponseField name="executedAmount" type="string">
+    Amount executed
+  </ResponseField>
+  
+  <ResponseField name="fee" type="string">
+    Fee amount to cover gas cost
+  </ResponseField>
+</Expandable>
+
+#### Interaction Types
+
+<Expandable title="Liquidity Interaction">
+  <ResponseField name="kind" type="string">
+    Always `"liquidity"`
+  </ResponseField>
+  
+  <ResponseField name="id" type="string">
+    ID of liquidity source from auction input
+  </ResponseField>
+  
+  <ResponseField name="inputToken" type="address">
+    Token being swapped in
+  </ResponseField>
+  
+  <ResponseField name="outputToken" type="address">
+    Token being swapped out
+  </ResponseField>
+  
+  <ResponseField name="inputAmount" type="string">
+    Amount of input token
+  </ResponseField>
+  
+  <ResponseField name="outputAmount" type="string">
+    Amount of output token
+  </ResponseField>
+  
+  <ResponseField name="internalize" type="boolean">
+    Whether to internalize (use buffers) per CIP-2
+  </ResponseField>
+</Expandable>
+
+<Expandable title="Custom Interaction">
+  <ResponseField name="kind" type="string">
+    Always `"custom"`
+  </ResponseField>
+  
+  <ResponseField name="target" type="address">
+    Contract to call
+  </ResponseField>
+  
+  <ResponseField name="value" type="string">
+    Native token (ETH) to send
+  </ResponseField>
+  
+  <ResponseField name="callData" type="string">
+    EVM calldata (hex with 0x prefix)
+  </ResponseField>
+  
+  <ResponseField name="allowances" type="array">
+    Required ERC20 allowances for this interaction
+  </ResponseField>
+  
+  <ResponseField name="inputs" type="array">
+    Expected token inputs (for accounting)
+  </ResponseField>
+  
+  <ResponseField name="outputs" type="array">
+    Expected token outputs (for accounting)
+  </ResponseField>
+  
+  <ResponseField name="internalize" type="boolean">
+    Whether to internalize
+  </ResponseField>
+</Expandable>
+
+**Example Response**:
+```json
+{
+  "solutions": [
+    {
+      "id": 1,
+      "prices": {
+        "0x6B175474E89094C44Da98b954EedeAC495271d0F": "1000000000000000000",
+        "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2": "1100000000000000000"
+      },
+      "trades": [
+        {
+          "kind": "fulfillment",
+          "order": "0xabc...123",
+          "executedAmount": "1000000000000000000"
+        }
+      ],
+      "interactions": [
+        {
+          "kind": "liquidity",
+          "id": "uniswap-v2-dai-weth",
+          "inputToken": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+          "outputToken": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+          "inputAmount": "1000000000000000000",
+          "outputAmount": "950000000000000000"
+        }
+      ],
+      "gas": 150000
+    }
+  ]
+}
+```
+
+**Status Codes**:
+- `200`: Solutions computed (may be empty array if no solution found)
+- `400`: Invalid request
+- `429`: Solver too busy
+- `500`: Internal error
+
+---
+
+### Receive Notification
+
+<CodeGroup>
+```bash cURL
+curl -X POST "http://localhost:8000/notify" \
+  -H "Content-Type: application/json" \
+  -d @notification.json
+```
+</CodeGroup>
+
+Receives notifications about how solutions performed.
+
+**Endpoint**: `POST /notify`
+
+#### Request Body
+
+<ParamField body="auctionId" type="string">
+  Auction ID for which notification applies
+</ParamField>
+
+<ParamField body="solutionId" type="integer">
+  Solution ID within the auction
+</ParamField>
+
+<ParamField body="kind" type="string">
+  Notification type
+</ParamField>
+
+#### Notification Kinds
+
+<Expandable title="Notification Types">
+  - `timeout`: Solution didn't arrive before deadline
+  - `emptySolution`: Solution had no trades
+  - `duplicatedSolutionId`: Solution ID was reused
+  - `simulationFailed`: Solution reverted in simulation
+  - `invalidClearingPrices`: Clearing prices violate constraints
+  - `missingPrice`: Required token price not provided
+  - `invalidExecutedAmount`: Executed amount violates order limits
+  - `nonBufferableTokensUsed`: Attempted to internalize untrusted token
+  - `solverAccountInsufficientBalance`: Solver account out of funds
+  - `success`: Solution won and settled successfully
+  - `revert`: Solution won but reverted on-chain
+  - `driverError`: Driver encountered error processing solution
+  - `cancelled`: Auction was cancelled
+  - `fail`: Solution failed for other reason
+  - `postprocessingTimedOut`: Post-processing took too long
+  - `banned`: Solver has been banned
+</Expandable>
+
+**Status Codes**:
+- `200`: Notification received
+
+---
+
+## Solution Requirements
+
+### Constraint Satisfaction
+
+1. **Order Limits**: 
+   - Sell orders: `executedSell ≤ sellAmount`
+   - Buy orders: `executedBuy ≥ buyAmount`
+
+2. **Partial Fills**:
+   - If `partiallyFillable == false`: Must fill completely or not at all
+   - If `partiallyFillable == true`: Can fill any amount within limits
+
+3. **Uniform Clearing Prices**:
+   - All trades use same price vector
+   - Prices must satisfy all order limit prices
+
+4. **Token Conservation**:
+   - Total tokens in = total tokens out (per token)
+   - Account for fees, surplus, and slippage
+
+5. **Gas Efficiency**:
+   - Reasonable gas estimate
+   - Balance quality vs cost
+
+### Optimization Objectives
+
+**Primary**: Maximize objective value:
+```
+score = Σ(user_surplus) + Σ(protocol_fees) - gas_cost_in_native_token
+```
+
+Where:
+- **User Surplus**: Difference between clearing price and limit price for each order
+- **Protocol Fees**: Sum of fees collected per fee policies
+- **Gas Cost**: Estimated gas × gas price × native token price
+
+**Secondary**:
+- Maximize filled volume
+- Minimize slippage
+- Optimize gas usage
+
+---
+
+## Fee Policy Application
+
+Solver engines must apply protocol fee policies when computing solutions:
+
+### Surplus Fee
+
+```json
+{
+  "kind": "surplus",
+  "factor": 0.5,
+  "maxVolumeFactor": 0.05
+}
+```
+
+Charge `factor` × surplus, capped at `maxVolumeFactor` × volume.
+
+**Example**:
+- Order: Sell 1000 DAI, limit price 1 DAI = 0.001 ETH
+- Execution: Receive 1.2 ETH for 1000 DAI (clearing price: 1 DAI = 0.0012 ETH)
+- Surplus: (0.0012 - 0.001) × 1000 = 0.2 ETH
+- Fee: min(0.5 × 0.2, 0.05 × 1000 × 0.0012) = min(0.1, 0.06) = 0.06 ETH
+
+### Volume Fee
+
+```json
+{
+  "kind": "volume",
+  "factor": 0.002
+}
+```
+
+Charge `factor` × executed volume.
+
+**Example**:
+- Order: Sell 1000 DAI
+- Execution: 1000 DAI at 0.0012 ETH per DAI
+- Fee: 0.002 × 1000 × 0.0012 = 0.0024 ETH
+
+### Price Improvement Fee
+
+```json
+{
+  "kind": "priceImprovement",
+  "factor": 0.5,
+  "maxVolumeFactor": 0.01,
+  "quote": {
+    "sell_amount": "1000000000000000000000",
+    "buy_amount": "1000000000000000000",
+    "fee": "10000000000000000"
+  }
+}
+```
+
+Charge `factor` × improvement over quote, capped at `maxVolumeFactor` × volume.
+
+---
+
+## Baseline Solver Algorithm
+
+The baseline solver provides a reference implementation:
+
+### Algorithm Outline
+
+1. **Order Matching**: Check for direct coincidence of wants
+   - If sell(A→B) and sell(B→A) exist, match them directly
+
+2. **Single Order Routing**: For each unmatched order:
+   - Find best path through available liquidity
+   - Consider gas costs
+   - Apply fee policies
+
+3. **Price Computation**: Compute uniform clearing prices
+   - Use marginal rates from executed liquidity
+   - Ensure all order limits satisfied
+
+4. **Gas Estimation**: Sum gas costs for all interactions
+
+5. **Score Calculation**: Compute objective value
+
+### Limitations
+
+- Greedy approach (no global optimization)
+- Handles one or two orders well
+- Struggles with complex multi-order scenarios
+- Doesn't explore all possible routings
+
+---
+
+## Advanced Solver Techniques
+
+### Batch Optimization
+
+- Consider all orders simultaneously
+- Find global optimum across order set
+- More computationally expensive
+
+### AMM Rebalancing
+
+- Use CoW orders to rebalance AMM pools
+- Arbitrage between liquidity sources
+- Improve overall liquidity efficiency
+
+### Ring Trades
+
+- Create cycles: A→B→C→A
+- Extract value from price differences
+- Can improve surplus for all participants
+
+### JIT Liquidity
+
+- Inject just-in-time orders to improve prices
+- Requires careful surplus accounting
+- Can bridge liquidity gaps
+
+### Smart Order Routing
+
+- Split orders across multiple paths
+- Reduce price impact
+- Consider gas costs vs quality tradeoff
+
+---
+
+## Testing Solvers
+
+### Unit Tests
+
+1. **Constraint Validation**: Verify all order limits respected
+2. **Price Consistency**: Check uniform clearing prices
+3. **Token Conservation**: Ensure balanced token flows
+4. **Fee Application**: Validate fee policy calculations
+5. **Gas Estimates**: Compare estimated vs actual gas
+
+### Integration Tests
+
+1. **Driver Integration**: Test with reference driver
+2. **Liquidity Sources**: Use real pool data
+3. **Historical Auctions**: Replay past auctions
+4. **Performance**: Measure solve time vs auction deadline
+
+### Benchmarking
+
+- Compare scores against other solvers
+- Measure win rate on historical data
+- Track gas efficiency
+- Monitor response times
+
+---
+
+## Best Practices
+
+1. **Respect Deadlines**: Always respond before deadline
+2. **Validate Input**: Check for malformed auction data
+3. **Handle Edge Cases**: Empty orders, zero amounts, etc.
+4. **Accurate Gas Estimates**: Critical for correct scoring
+5. **Apply Fee Policies Correctly**: Misapplied fees lead to invalid solutions
+6. **Consider Partial Fills**: Don't ignore partially fillable orders
+7. **Optimize Incrementally**: Start simple, add complexity gradually
+8. **Log Decisions**: Track why certain paths were chosen
+9. **Monitor Performance**: Identify bottlenecks in optimization
+10. **Test Thoroughly**: Validate constraints before returning solutions
+
+---
+
+## Resources
+
+- [CIP-2: Internalization](https://snapshot.org/#/cow.eth/proposal/0x2ad811460b7e46f5a8d2e98e327c492e8c7b6ce4cf32b14d3dbf0b5ab7e6b5e0)
+- [CIP-20: Solution Scoring](https://snapshot.org/#/cow.eth/proposal/0x2d3f9bd1ea72dca84b03e97dda3efc1f4a42a772c54bd2037e8b62e7d09a491f)
+- [CIP-67: Fair Combinatorial Auctions](https://forum.cow.fi/t/cip-67-moving-from-batch-auction-to-the-fair-combinatorial-auction/2967)
+- [Baseline Solver Source](https://github.com/cowprotocol/services/tree/main/crates/solvers)
+
+---
+
+## Example: Simple Sell Order Solution
+
+**Input Auction**:
+```json
+{
+  "id": "12345",
+  "tokens": {
+    "0x6B17...": {
+      "decimals": 18,
+      "symbol": "DAI",
+      "referencePrice": "500000000000000",
+      "availableBalance": "0",
+      "trusted": true
+    },
+    "0xC02a...": {
+      "decimals": 18,
+      "symbol": "WETH",
+      "referencePrice": "1000000000000000000",
+      "availableBalance": "1000000000000000000",
+      "trusted": true
+    }
+  },
+  "orders": [
+    {
+      "uid": "0xabc...123",
+      "sellToken": "0x6B17...",
+      "buyToken": "0xC02a...",
+      "sellAmount": "1000000000000000000000",
+      "buyAmount": "900000000000000000",
+      "kind": "sell",
+      "partiallyFillable": false,
+      "class": "market",
+      "feePolicies": [
+        {
+          "kind": "surplus",
+          "factor": 0.5,
+          "maxVolumeFactor": 0.05
+        }
+      ]
+    }
+  ],
+  "liquidity": [
+    {
+      "id": "1",
+      "address": "0xA478...",
+      "kind": "constantProduct",
+      "tokens": {
+        "0x6B17...": { "balance": "1000000000000000000000000" },
+        "0xC02a...": { "balance": "1000000000000000000000" }
+      },
+      "fee": "0.003",
+      "router": "0x7a25...",
+      "gasEstimate": "100000"
+    }
+  ],
+  "effectiveGasPrice": "30000000000",
+  "deadline": "2024-03-04T12:00:10Z"
+}
+```
+
+**Output Solution**:
+```json
+{
+  "solutions": [
+    {
+      "id": 1,
+      "prices": {
+        "0x6B17...": "1000",
+        "0xC02a...": "1050000"
+      },
+      "trades": [
+        {
+          "kind": "fulfillment",
+          "order": "0xabc...123",
+          "executedAmount": "1000000000000000000000"
+        }
+      ],
+      "interactions": [
+        {
+          "kind": "liquidity",
+          "id": "1",
+          "inputToken": "0x6B17...",
+          "outputToken": "0xC02a...",
+          "inputAmount": "1000000000000000000000",
+          "outputAmount": "997000000000000000"
+        }
+      ],
+      "gas": 100000
+    }
+  ]
+}
+```
+
+This solution:
+- Fulfills the order completely (not partially fillable)
+- Routes through the Uniswap V2 pool
+- Returns ~0.997 WETH for 1000 DAI
+- Exceeds the buy amount limit of 0.9 WETH
+- Generates surplus that can be partially captured as protocol fee

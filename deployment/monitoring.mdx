@@ -1,0 +1,798 @@
+---
+title: "Monitoring & Observability"
+description: "Comprehensive monitoring, metrics, logging, and profiling for CoW Protocol Services"
+---
+
+## Overview
+
+CoW Protocol Services provide extensive observability through multiple channels:
+
+- **Prometheus metrics** - Time-series metrics for monitoring and alerting
+- **OpenTelemetry tracing** - Distributed tracing for request flows
+- **Structured logging** - JSON-formatted logs with tracing integration
+- **Runtime diagnostics** - Dynamic log filtering and heap profiling
+- **Performance profiling** - Heap dumps and tokio runtime inspection
+
+## Prometheus Metrics
+
+### Metrics Endpoint
+
+All services expose Prometheus-compatible metrics on a dedicated port (default: 9586):
+
+```bash
+# Default metrics endpoint
+http://localhost:9586/metrics
+
+# Health check endpoints
+http://localhost:9586/liveness
+http://localhost:9586/ready
+http://localhost:9586/startup
+```
+
+**Configuration:**
+```bash
+# Services typically expose metrics on 9586 by default
+# Check service-specific documentation for custom ports
+```
+
+### Available Metrics
+
+**Common Metrics (all services):**
+
+```
+# Auction overhead tracking
+auction_overhead_time{component="autopilot",phase="database"}
+auction_overhead_count{component="autopilot",phase="database"}
+
+# Database query performance  
+persistence_database_queries{type="fetch_orders"}
+
+# HTTP request metrics (via observe crate)
+http_requests_total{method="GET",endpoint="/api/v1/orders"}
+http_request_duration_seconds{method="GET",endpoint="/api/v1/orders"}
+```
+
+**Service-Specific Metrics:**
+
+*Orderbook:*
+```
+orderbook_orders_total{status="created"}
+orderbook_quotes_total
+orderbook_api_requests{endpoint="/api/v1/quote"}
+```
+
+*Autopilot:*
+```
+autopilot_auctions_total
+autopilot_auction_orders_count
+autopilot_solutions_submitted
+autopilot_settlements_completed
+```
+
+*Driver:*
+```
+driver_solutions_simulated
+driver_solutions_submitted  
+driver_tx_submission_time
+```
+
+### Scrape Configuration
+
+**Prometheus prometheus.yml:**
+```yaml
+scrape_configs:
+  - job_name: 'cow-orderbook'
+    static_configs:
+      - targets: ['orderbook-1:9586', 'orderbook-2:9586', 'orderbook-3:9586']
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+  - job_name: 'cow-autopilot'
+    static_configs:
+      - targets: ['autopilot:9586']
+    scrape_interval: 15s
+
+  - job_name: 'cow-driver'
+    static_configs:
+      - targets: ['driver:9586']
+    scrape_interval: 15s
+
+  - job_name: 'cow-solver'
+    static_configs:
+      - targets: ['solver-baseline:9586']
+    scrape_interval: 15s
+```
+
+**Kubernetes ServiceMonitor:**
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cow-services
+  namespace: cow-protocol
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: cow-protocol
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics
+```
+
+<Note>
+Services automatically register metrics when they start. No explicit metric initialization is required in most cases.
+</Note>
+
+## OpenTelemetry Integration
+
+### Distributed Tracing
+
+Services support OpenTelemetry tracing with OTLP export via gRPC.
+
+**Configuration:**
+
+```bash
+autopilot \
+  --tracing-collector-endpoint http://otel-collector:4317 \
+  --tracing-level INFO \
+  --tracing-exporter-timeout 10s
+```
+
+**Environment Variables:**
+```bash
+export TRACING_COLLECTOR_ENDPOINT=http://localhost:4317
+export TRACING_LEVEL=INFO
+export TRACING_EXPORTER_TIMEOUT=10s
+```
+
+### OpenTelemetry Collector Setup
+
+**otel-collector-config.yaml:**
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+  memory_limiter:
+    limit_mib: 512
+    spike_limit_mib: 128
+    check_interval: 5s
+
+exporters:
+  # Export to Jaeger
+  jaeger:
+    endpoint: jaeger:14250
+    tls:
+      insecure: true
+  
+  # Export to Tempo
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  
+  # Export to Honeycomb
+  otlp/honeycomb:
+    endpoint: api.honeycomb.io:443
+    headers:
+      x-honeycomb-team: ${HONEYCOMB_API_KEY}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [jaeger, otlp/tempo]
+```
+
+### Trace Propagation
+
+Services use W3C TraceContext propagation:
+
+```
+traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01
+tracestate: congo=t61rcWkgMzE
+```
+
+HTTP headers are automatically propagated across service boundaries.
+
+**Custom Span Attributes:**
+```rust
+use tracing::{info_span, instrument};
+
+#[instrument(skip(context))]
+async fn process_auction(auction_id: i64, context: &Context) {
+    let span = info_span!("process_auction", auction_id);
+    // Span automatically includes auction_id
+}
+```
+
+<Tip>
+Use Jaeger or Grafana Tempo to visualize trace flows across services and identify performance bottlenecks.
+</Tip>
+
+## Logging
+
+### Structured Logging with tracing
+
+All services use the `tracing` crate for structured logging.
+
+**Log Levels:**
+- `TRACE` - Very verbose, function entry/exit
+- `DEBUG` - Detailed diagnostic information  
+- `INFO` - General informational messages (default)
+- `WARN` - Warning conditions
+- `ERROR` - Error conditions that need attention
+
+**Configuration:**
+```bash
+# Production: JSON format
+autopilot \
+  --log-filter "info,autopilot=debug" \
+  --use-json-logs true \
+  --log-stderr-threshold ERROR
+
+# Development: Human-readable
+autopilot \
+  --log-filter "debug,shared::http=trace" \
+  --use-json-logs false
+```
+
+### JSON Log Format
+
+**Example output:**
+```json
+{
+  "timestamp": "2026-03-04T15:23:45.123Z",
+  "level": "INFO",
+  "target": "autopilot::run_loop",
+  "message": "auction created",
+  "fields": {
+    "auction_id": 12345,
+    "order_count": 42
+  },
+  "spans": [
+    {"name": "run_loop", "auction_id": 12345}
+  ],
+  "trace_id": "0af7651916cd43dd8448eb211c80319c",
+  "span_id": "b7ad6b7169203331"
+}
+```
+
+**Log Fields:**
+- `timestamp` - ISO 8601 timestamp (UTC)
+- `level` - Log level
+- `target` - Module path
+- `message` - Human-readable message
+- `fields` - Structured key-value data
+- `spans` - Active tracing spans
+- `trace_id` - OpenTelemetry trace ID
+- `span_id` - OpenTelemetry span ID
+
+### Log Aggregation
+
+**Promtail + Loki:**
+```yaml
+# promtail-config.yaml
+server:
+  http_listen_port: 9080
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: cow-services
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: cow-services
+          __path__: /var/log/cow/*.json
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            target: target
+            message: message
+            trace_id: trace_id
+      - labels:
+          level:
+          target:
+```
+
+**Elasticsearch via Filebeat:**
+```yaml
+# filebeat.yml  
+filebeat.inputs:
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/cow/*.json
+    json.keys_under_root: true
+    json.add_error_key: true
+
+output.elasticsearch:
+  hosts: ["elasticsearch:9200"]
+  index: "cow-services-%{+yyyy.MM.dd}"
+
+setup.template.name: "cow-services"
+setup.template.pattern: "cow-services-*"
+```
+
+## Runtime Log Filter Adjustment
+
+Change log filtering while services are running without restart.
+
+### How It Works
+
+Each service creates a UNIX socket:
+```
+/tmp/log_filter_override_<program_name>_<pid>.sock
+```
+
+### Usage Examples
+
+**Local Development:**
+```bash
+# Find the socket
+ls /tmp/log_filter_override_*
+
+# Apply new filter
+echo "debug,autopilot=trace" | nc -U /tmp/log_filter_override_autopilot_12345.sock
+
+# Reset to original
+echo "reset" | nc -U /tmp/log_filter_override_autopilot_12345.sock
+```
+
+**Kubernetes:**
+```bash
+# List sockets
+kubectl exec autopilot-5d6f8c9b7-xyz -- ls /tmp/log_filter_override_*
+
+# Apply filter
+kubectl exec autopilot-5d6f8c9b7-xyz -- sh -c \
+  "echo 'trace' | nc -U /tmp/log_filter_override_autopilot_1.sock"
+
+# View response
+kubectl logs autopilot-5d6f8c9b7-xyz --tail=10
+```
+
+**Docker:**
+```bash
+docker exec cow-autopilot sh -c \
+  "echo 'debug,shared=trace' | nc -U /tmp/log_filter_override_autopilot_1.sock"
+```
+
+### Use Cases
+
+1. **Debug production issues** - Enable verbose logging temporarily
+2. **Trace specific flows** - Focus on particular modules
+3. **Reduce noise** - Filter out chatty modules
+4. **A/B comparison** - Compare behavior at different log levels
+
+<Warning>
+Changing log filters at runtime is powerful but can generate large volumes of logs. Use `trace` level sparingly in production.
+</Warning>
+
+## Tokio Console (Playground Only)
+
+tokio-console provides runtime inspection of async tasks, but is **only available in playground environments** due to significant memory overhead.
+
+### Enabling tokio-console
+
+**Playground Environment:**
+```bash
+export TOKIO_CONSOLE=true
+docker compose -f playground/docker-compose.fork.yml up --build
+```
+
+<Warning>
+tokio-console has **significant memory overhead** and must **never** be enabled in production. It's only compiled into playground builds.
+</Warning>
+
+### Installation
+
+```bash
+cargo install --locked tokio-console
+```
+
+### Usage
+
+```bash
+# Connect to service (playground ports)
+tokio-console http://localhost:6669  # orderbook
+tokio-console http://localhost:6670  # autopilot  
+tokio-console http://localhost:6671  # driver
+tokio-console http://localhost:6672  # baseline solver
+```
+
+**Console Features:**
+- View all async tasks
+- Monitor task states (running, idle, polling)
+- Track task resource usage
+- Detect blocking operations
+- Identify task leaks
+
+**Playground Ports:**
+```
+orderbook: 6669
+autopilot: 6670
+driver:    6671
+baseline:  6672
+```
+
+<Note>
+tokio-console requires both `tokio_unstable` cfg and the `tokio-console` feature. Production builds exclude these.
+</Note>
+
+## Heap Profiling with jemalloc
+
+All services use jemalloc as the default allocator with built-in heap profiling support.
+
+### Enabling Heap Profiling
+
+Heap profiling is enabled **at runtime** via environment variables:
+
+```bash
+# Enable profiling with reasonable sampling
+export MALLOC_CONF="prof:true,prof_active:true,lg_prof_sample:22"
+
+autopilot
+```
+
+**MALLOC_CONF Parameters:**
+- `prof:true` - Enable profiling capability
+- `prof_active:true` - Start profiling immediately
+- `lg_prof_sample:22` - Sample every 4MB (2^22 bytes)
+
+<Tip>
+Higher `lg_prof_sample` values reduce overhead but provide less detail. Start with 22 (4MB) for production.
+</Tip>
+
+### Heap Dump Socket
+
+When profiling is enabled, each service opens a UNIX socket:
+```
+/tmp/heap_dump_<binary_name>.sock
+```
+
+### Generating Heap Dumps
+
+**Local Development:**
+```bash
+echo dump | nc -U /tmp/heap_dump_autopilot.sock > heap.pprof
+```
+
+**Kubernetes:**
+```bash
+kubectl exec <pod> -n <namespace> -- sh -c \
+  "echo dump | nc -U /tmp/heap_dump_orderbook.sock" > heap.pprof
+```
+
+**Docker:**
+```bash
+docker exec <container> sh -c \
+  "echo dump | nc -U /tmp/heap_dump_driver.sock" > heap.pprof
+```
+
+<Note>
+Heap dumps are in pprof binary format and can be large (100MB+). The socket has a 60-second timeout per dump.
+</Note>
+
+### Analyzing Heap Dumps
+
+**Install pprof:**
+```bash
+go install github.com/google/pprof@latest
+```
+
+**Interactive Web UI:**
+```bash
+pprof -http=:8080 heap.pprof
+```
+
+Navigate to http://localhost:8080 and explore:
+- **Top** - Functions with highest allocation
+- **Graph** - Visual call graph
+- **Flame Graph** - Hierarchical visualization
+- **Peek** - Source code view
+- **Source** - Annotated source
+
+**Command-Line Analysis:**
+```bash
+# Top allocators
+pprof -top heap.pprof
+
+# Call tree
+pprof -tree heap.pprof
+
+# Focus on specific function
+pprof -top -focus="autopilot::run_loop" heap.pprof
+
+# Compare two dumps
+pprof -top -base heap1.pprof heap2.pprof
+```
+
+**Example Output:**
+```
+File: autopilot
+Type: inuse_space
+Showing nodes accounting for 1.23GB, 89.45% of 1.38GB total
+      flat  flat%   sum%        cum   cum%
+  512.00MB 37.10% 37.10%   512.00MB 37.10%  alloc::vec::Vec::extend_from_slice
+  256.00MB 18.55% 55.65%   256.00MB 18.55%  sqlx::query::Query::fetch_all
+  192.00MB 13.91% 69.57%   192.00MB 13.91%  autopilot::domain::auction::Auction::new
+```
+
+### Performance Impact
+
+Heap profiling has minimal runtime overhead when enabled:
+- **CPU overhead:** < 1% with lg_prof_sample=22
+- **Memory overhead:** ~5-10% for metadata
+- **Dump generation:** 1-5 seconds depending on heap size
+
+<Warning>
+Dumps capture a snapshot of the current heap state. For memory leaks, compare multiple dumps over time.
+</Warning>
+
+## Health Checks
+
+All services expose health check endpoints for orchestration systems.
+
+### Endpoints
+
+**Liveness Probe:**
+```bash
+GET http://localhost:9586/liveness
+
+# Returns 200 OK if service is alive
+# Returns 503 Service Unavailable if unhealthy
+```
+
+Use for detecting deadlocks and crashes.
+
+**Readiness Probe:**  
+```bash
+GET http://localhost:9586/ready
+
+# Returns 200 OK if ready to serve traffic
+# Returns 503 if not ready (e.g., database connection lost)
+```
+
+Use for load balancer decisions.
+
+**Startup Probe:**
+```bash
+GET http://localhost:9586/startup
+
+# Returns 200 OK if startup complete
+# Returns 503 during initialization
+```
+
+Use for slow-starting services.
+
+### Kubernetes Configuration
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: autopilot
+spec:
+  containers:
+    - name: autopilot
+      image: cow/autopilot:latest
+      ports:
+        - name: metrics
+          containerPort: 9586
+      livenessProbe:
+        httpGet:
+          path: /liveness
+          port: metrics
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readinessProbe:
+        httpGet:
+          path: /ready
+          port: metrics
+        initialDelaySeconds: 10
+        periodSeconds: 5
+        timeoutSeconds: 3
+        failureThreshold: 2
+      startupProbe:
+        httpGet:
+          path: /startup
+          port: metrics
+        initialDelaySeconds: 0
+        periodSeconds: 5
+        timeoutSeconds: 3
+        failureThreshold: 30  # 150 seconds max startup time
+```
+
+## Alerting Recommendations
+
+### Critical Alerts
+
+**Service Down:**
+```yaml
+alert: ServiceDown
+expr: up{job="cow-autopilot"} == 0
+for: 2m
+annotations:
+  summary: "Autopilot service is down"
+```
+
+**High Error Rate:**
+```yaml
+alert: HighErrorRate  
+expr: |
+  rate(http_requests_total{status=~"5.."}[5m]) / 
+  rate(http_requests_total[5m]) > 0.05
+for: 5m
+annotations:
+  summary: "Error rate above 5%"
+```
+
+**Database Connection Pool Exhausted:**
+```yaml
+alert: DBPoolExhausted
+expr: db_pool_connections_active / db_pool_connections_max > 0.9
+for: 5m
+annotations:
+  summary: "Database connection pool nearly exhausted"
+```
+
+### Warning Alerts
+
+**Slow Queries:**
+```yaml
+alert: SlowDatabaseQueries
+expr: histogram_quantile(0.95, rate(persistence_database_queries_bucket[5m])) > 5
+for: 10m
+annotations:
+  summary: "95th percentile DB query time > 5s"
+```
+
+**High Memory Usage:**
+```yaml
+alert: HighMemoryUsage
+expr: process_resident_memory_bytes / 1e9 > 8
+for: 15m  
+annotations:
+  summary: "Service using more than 8GB memory"
+```
+
+**Auction Delays:**
+```yaml
+alert: AuctionDelays
+expr: rate(auction_overhead_time_total[5m]) > 10
+for: 10m
+annotations:
+  summary: "Auction overhead increasing"
+```
+
+## Grafana Dashboards
+
+### Example Dashboard Panels
+
+**Request Rate:**
+```promql
+sum(rate(http_requests_total[5m])) by (endpoint)
+```
+
+**Request Duration (p50, p95, p99):**
+```promql
+histogram_quantile(0.50, rate(http_request_duration_seconds_bucket[5m]))
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))  
+histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
+```
+
+**Database Query Performance:**
+```promql
+histogram_quantile(0.95, sum(rate(persistence_database_queries_bucket[5m])) by (le, type))
+```
+
+**Active Orders:**
+```promql
+orderbook_orders_total{status="active"}
+```
+
+**Settlement Success Rate:**
+```promql
+sum(rate(autopilot_settlements_completed[5m])) / 
+sum(rate(autopilot_solutions_submitted[5m]))
+```
+
+## Best Practices
+
+1. **Use structured logging in production** - Enable `--use-json-logs true`
+2. **Set appropriate log levels** - `info` for production, `debug`/`trace` for troubleshooting
+3. **Monitor connection pools** - Alert on high utilization before exhaustion
+4. **Enable distributed tracing** - Track requests across service boundaries
+5. **Use runtime log filtering** - Debug production without restarts
+6. **Profile memory regularly** - Generate heap dumps weekly to detect leaks
+7. **Never enable tokio-console in production** - Playground only
+8. **Configure health checks** - Proper liveness/readiness probes
+9. **Set up alerting** - Critical and warning alerts for all services
+10. **Aggregate logs centrally** - Use Loki, Elasticsearch, or CloudWatch
+
+## Troubleshooting
+
+### Missing Metrics
+
+**Check metrics endpoint:**
+```bash
+curl http://localhost:9586/metrics
+```
+
+**Verify Prometheus scrape:**
+```promql
+up{job="cow-autopilot"}
+```
+
+### Trace Not Appearing
+
+**Verify collector connection:**
+```bash
+# Check collector logs
+kubectl logs otel-collector
+
+# Test endpoint
+curl http://otel-collector:4317
+```
+
+**Check trace sampling:**
+Services use `AlwaysOn` sampler by default.
+
+### Log Volume Too High
+
+**Reduce log level:**
+```bash
+echo "warn" | nc -U /tmp/log_filter_override_orderbook_1.sock
+```
+
+**Filter noisy modules:**
+```bash
+echo "info,hyper=warn,sqlx=warn" | nc -U /tmp/log_filter_override_autopilot_1.sock
+```
+
+### Heap Dump Fails
+
+**Check profiling enabled:**
+```bash
+echo $MALLOC_CONF
+# Should contain: prof:true,prof_active:true
+```
+
+**Verify socket exists:**
+```bash
+ls /tmp/heap_dump_*.sock
+```
+
+**Timeout:**
+Large heaps may take >60 seconds. Increase sampling rate:
+```bash
+MALLOC_CONF="prof:true,prof_active:true,lg_prof_sample:24"  # 16MB sampling
+```
+
+## See Also
+
+- [Configuration](/deployment/configuration) - Service configuration reference
+- [Database Monitoring](/deployment/database#monitoring-queries) - Database-specific monitoring
+- [Prometheus Documentation](https://prometheus.io/docs/) - Prometheus guides
+- [OpenTelemetry Documentation](https://opentelemetry.io/docs/) - Tracing setup
+- [pprof Documentation](https://github.com/google/pprof/blob/main/doc/README.md) - Heap profiling analysis

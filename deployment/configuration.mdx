@@ -1,0 +1,580 @@
+---
+title: "Configuration"
+description: "Complete guide to configuring CoW Protocol Services"
+---
+
+## Overview
+
+CoW Protocol Services use a combination of configuration methods to provide flexibility for different deployment scenarios:
+
+- **Command-line arguments** - Runtime parameters passed when starting services
+- **Environment variables** - System-level configuration, especially for sensitive data
+- **TOML configuration files** - Structured configuration for complex settings
+- **Runtime adjustments** - Dynamic log filtering without restarts
+
+All services support `--help` for comprehensive documentation of available options:
+
+```bash
+autopilot --help
+orderbook --help
+driver --help
+solvers --help
+refunder --help
+```
+
+## Configuration Priority
+
+When the same setting is specified in multiple places, the following priority order applies:
+
+1. Command-line arguments (highest priority)
+2. Environment variables
+3. Configuration file values
+4. Default values (lowest priority)
+
+## Common Configuration Parameters
+
+### Database Connection
+
+All services that require database access use PostgreSQL with connection pooling via sqlx.
+
+**Connection Pool Configuration:**
+
+```bash
+# Maximum number of database connections in the pool
+--db-max-connections 10
+
+# Or via environment variable
+export DB_MAX_CONNECTIONS=10
+```
+
+<Note>
+The default connection pool size is 10, matching sqlx defaults. Adjust based on your workload and available database connections.
+</Note>
+
+**Database URL Format:**
+
+Database URLs follow the PostgreSQL connection string format:
+
+```
+postgresql://[user[:password]@][host][:port][/database][?param1=value1&...]
+```
+
+Example:
+```bash
+postgresql://cow:password@localhost:5432/mainnet?sslmode=require
+```
+
+### Network Configuration
+
+**Ethereum Node Connection:**
+
+```bash
+# Primary RPC endpoint
+--node-url http://localhost:8545
+
+# State override simulation endpoint (optional)
+--simulation-node-url http://localhost:8545
+
+# Expected chain ID for validation
+--chain-id 1
+
+# Network block interval (auto-detected if not specified)
+--network-block-interval 12s
+```
+
+**Contract Addresses:**
+
+```bash
+# Override settlement contract address
+--settlement-contract-address 0x9008D19f58AAbD9eD0D60971565AA8510560ab41
+
+# Override Balances contract address
+--balances-contract-address 0x3e8C6De9510e7ECad902D005DE3Ab52f35cF4f1b
+
+# Override Signatures contract address  
+--signatures-contract-address 0x8262d639c38470F38d2eff15926F7071c28057Af
+```
+
+### Gas Estimation
+
+```bash
+# Gas estimators to use (in order)
+--gas-estimators Web3,Native
+
+# Gas price cap for transaction submission
+--gas-price-cap 1000000000000
+```
+
+Supported gas estimators:
+- **Native** - Uses eth_feeHistory (supports all networks)
+- **Web3** - Uses eth_gasPrice (supports all networks)
+- **EthGasStation** - External API (mainnet only)
+- **GasNow** - External API (mainnet only)
+
+<Warning>
+Always include at least one estimator that supports your target network. `Native` and `Web3` work on all EVM chains.
+</Warning>
+
+## Logging Configuration
+
+### Log Filtering
+
+Logging uses the `tracing-subscriber` crate with flexible filtering based on the `EnvFilter` syntax.
+
+**Basic Usage:**
+
+```bash
+# Set default log level
+--log-filter info
+
+# Module-specific filtering
+--log-filter "info,autopilot=debug,driver=debug"
+
+# Multiple modules with different levels
+--log-filter "warn,autopilot=debug,shared::http=trace"
+```
+
+**Filter Syntax:**
+
+```
+target[span{field=value}]=level
+```
+
+- `target` - Module path (e.g., `autopilot::run_loop`)
+- `span{field=value}` - Optional span filter
+- `level` - trace, debug, info, warn, error
+
+**Examples:**
+
+```bash
+# Show all debug logs for autopilot
+autopilot=debug
+
+# Show only errors globally, but info for orderbook
+error,orderbook=info
+
+# Trace HTTP requests in shared module
+shared::http=trace
+
+# Filter by span field
+autopilot[order_uid]=debug
+```
+
+<Tip>
+See the [tracing-subscriber EnvFilter documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives) for complete syntax.
+</Tip>
+
+### Log Output Format
+
+**Human-Readable Format (default):**
+
+```bash
+--use-json-logs false
+```
+
+Output:
+```
+2026-03-04T15:23:45.123Z INFO autopilot: auction created id=12345
+```
+
+**Structured JSON Format:**
+
+```bash
+--use-json-logs true
+```
+
+Output:
+```json
+{"timestamp":"2026-03-04T15:23:45.123Z","level":"INFO","target":"autopilot","message":"auction created","id":12345}
+```
+
+<Note>
+JSON logs are recommended for production deployments as they integrate better with log aggregation systems like Elasticsearch, Loki, or CloudWatch.
+</Note>
+
+### Stderr Threshold
+
+Control which log levels go to stderr vs stdout:
+
+```bash
+# Send WARN and ERROR to stderr, everything else to stdout
+--log-stderr-threshold WARN
+```
+
+### Runtime Log Filter Changes
+
+You can change log filters while a service is running without restart.
+
+**How it Works:**
+
+Each process creates a UNIX socket at:
+```
+/tmp/log_filter_override_<program_name>_<pid>.sock
+```
+
+**Changing the Filter:**
+
+```bash
+# Connect to the socket and send new filter
+echo "debug,autopilot=trace" | nc -U /tmp/log_filter_override_autopilot_12345.sock
+
+# Reset to original filter
+echo "reset" | nc -U /tmp/log_filter_override_autopilot_12345.sock
+```
+
+**In Kubernetes:**
+
+```bash
+kubectl exec <pod> -n <namespace> -- sh -c \
+  "echo 'debug,autopilot=trace' | nc -U /tmp/log_filter_override_autopilot_1.sock"
+```
+
+**In Docker:**
+
+```bash
+docker exec <container> sh -c \
+  "echo 'debug' | nc -U /tmp/log_filter_override_orderbook_1.sock"
+```
+
+<Tip>
+This is especially useful for debugging production issues that require verbose logging but which might disappear after a restart.
+</Tip>
+
+## OpenTelemetry Tracing
+
+Services support distributed tracing via OpenTelemetry with OTLP export.
+
+**Configuration:**
+
+```bash
+# OTLP collector endpoint
+--tracing-collector-endpoint http://localhost:4317
+
+# Minimum trace level to collect
+--tracing-level INFO
+
+# Export timeout
+--tracing-exporter-timeout 10s
+```
+
+**Environment Variables:**
+
+```bash
+export TRACING_COLLECTOR_ENDPOINT=http://localhost:4317
+export TRACING_LEVEL=INFO
+export TRACING_EXPORTER_TIMEOUT=10s
+```
+
+The tracing system:
+- Uses OTLP/gRPC for span export
+- Implements TraceContext propagation (W3C standard)
+- Samples all spans by default (configurable in code)
+- Tags spans with `service.name` attribute
+
+<Note>
+Tracing adds overhead. In production, consider implementing sampling strategies for high-throughput services.
+</Note>
+
+## TOML Configuration Files
+
+Some services accept TOML configuration files for complex structured settings.
+
+### Driver Configuration Example
+
+**File: `driver.toml`**
+
+```toml
+tx-gas-limit = "45000000"
+
+[[solver]]
+name = "baseline"
+endpoint = "http://localhost:8080"
+absolute-slippage = "40000000000000000"  # 0.04 ETH in wei
+relative-slippage = "0.1"  # 10%
+account = "0x0000000000000000000000000000000000000000000000000000000000000001"
+merge-solutions = true
+response-size-limit-max-bytes = 30000000
+
+[solver.request-headers]
+Authorization = "Bearer token123"
+
+[submission]
+gas-price-cap = "1000000000000"
+
+[[submission.mempool]]
+url = "https://rpc.example.com"
+name = "primary"
+max-additional-tip = "5000000000"
+additional-tip-percentage = 0.05
+mines-reverting-txs = true
+
+[contracts]
+gp-v2-settlement = "0x9008D19f58AAbD9eD0D60971565AA8510560ab41"
+weth = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+balances = "0x3e8C6De9510e7ECad902D005DE3Ab52f35cF4f1b"
+signatures = "0x8262d639c38470F38d2eff15926F7071c28057Af"
+flashloan-router = "0x0000000000000000000000000000000000000000"
+
+[[contracts.cow-amms]]
+factory = "0x86f3df416979136cb4fdea2c0886301b911c163b"
+helper = "0x86f3df416979136cb4fdea2c0886301b911c163b"
+
+[liquidity]
+base-tokens = [
+  "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",  # WETH
+  "0x6B175474E89094C44Da98b954EedeAC495271d0F",  # DAI
+]
+
+[[order-priority]]
+strategy = "creation-timestamp"
+
+[[order-priority]]
+strategy = "external-price"
+
+[[order-priority]]
+strategy = "own-quotes"
+max-order-age = "1m"
+```
+
+**Loading Configuration:**
+
+```bash
+driver --config /etc/cow/driver.toml
+```
+
+### Autopilot Configuration Example
+
+**File: `autopilot.toml`**
+
+```toml
+[[drivers]]
+name = "baseline"
+url = "http://driver:8080/baseline"
+submission-account.address = "0xa0Ee7A142d267C1f36714E4a8F75612F20a79720"
+
+[fee-policies]
+# Fee policy configuration
+
+[native-price-estimation]
+estimators = [[
+  { type = "Driver", name = "baseline", url = "http://driver:8080/baseline" }
+]]
+```
+
+### Orderbook Configuration Example
+
+**File: `orderbook.toml`**
+
+```toml
+eip1271-skip-creation-validation = true
+```
+
+<Warning>
+Always validate TOML syntax before deploying. Use tools like `tombi` or online validators to catch syntax errors.
+</Warning>
+
+## Network-Specific Settings
+
+### Mainnet Configuration
+
+```bash
+--chain-id 1
+--settlement-contract-address 0x9008D19f58AAbD9eD0D60971565AA8510560ab41
+--network-block-interval 12s
+```
+
+### Gnosis Chain Configuration
+
+```bash
+--chain-id 100
+--settlement-contract-address 0x9008D19f58AAbD9eD0D60971565AA8510560ab41
+--network-block-interval 5s
+```
+
+### Arbitrum One Configuration
+
+```bash
+--chain-id 42161
+--settlement-contract-address 0x9008D19f58AAbD9eD0D60971565AA8510560ab41
+--network-block-interval 250ms
+```
+
+### Base Configuration
+
+```bash
+--chain-id 8453
+--settlement-contract-address 0x9008D19f58AAbD9eD0D60971565AA8510560ab41  
+--network-block-interval 2s
+```
+
+## Performance Tuning
+
+### Connection Pool Sizing
+
+**Orderbook** (user-facing, high concurrency):
+```bash
+--db-max-connections 50
+```
+
+**Autopilot** (background processing):
+```bash
+--db-max-connections 20
+```
+
+**Driver** (moderate concurrency):
+```bash
+--db-max-connections 15
+```
+
+<Tip>
+Monitor database connection usage and active queries to tune pool sizes. Too small causes request queueing; too large exhausts database resources.
+</Tip>
+
+### RPC Configuration
+
+```bash
+# Use multiple RPC endpoints for redundancy
+--node-url http://primary-rpc:8545
+
+# Separate simulation node for state overrides
+--simulation-node-url http://simulation-rpc:8545
+```
+
+## Environment Variables Reference
+
+### Core Services
+
+```bash
+# Database
+DB_MAX_CONNECTIONS=10
+
+# Logging  
+LOG_FILTER="info,autopilot=debug"
+LOG_STDERR_THRESHOLD=WARN
+USE_JSON_LOGS=true
+
+# Tracing
+TRACING_COLLECTOR_ENDPOINT=http://localhost:4317
+TRACING_LEVEL=INFO
+TRACING_EXPORTER_TIMEOUT=10s
+
+# Network
+NODE_URL=http://localhost:8545
+SIMULATION_NODE_URL=http://localhost:8545
+CHAIN_ID=1
+NETWORK_BLOCK_INTERVAL=12s
+
+# Contracts
+SETTLEMENT_CONTRACT_ADDRESS=0x9008D19f58AAbD9eD0D60971565AA8510560ab41
+BALANCES_CONTRACT_ADDRESS=0x3e8C6De9510e7ECad902D005DE3Ab52f35cF4f1b
+SIGNATURES_CONTRACT_ADDRESS=0x8262d639c38470F38d2eff15926F7071c28057Af
+
+# Gas Estimation
+GAS_ESTIMATORS=Web3,Native
+```
+
+### Development & Debugging
+
+```bash
+# Enable tokio-console (playground only)
+TOKIO_CONSOLE=true
+
+# Enable heap profiling with jemalloc
+MALLOC_CONF="prof:true,prof_active:true,lg_prof_sample:22"
+```
+
+<Warning>
+`TOKIO_CONSOLE=true` has significant memory overhead and should **never** be enabled in production. It's only available in playground builds.
+</Warning>
+
+## Configuration Examples by Deployment
+
+### Production Deployment
+
+```bash
+autopilot \
+  --log-filter "info,autopilot=debug" \
+  --use-json-logs true \
+  --log-stderr-threshold ERROR \
+  --db-max-connections 20 \
+  --node-url https://mainnet.rpc.example.com \
+  --chain-id 1 \
+  --gas-estimators Native,Web3 \
+  --tracing-collector-endpoint http://otel-collector:4317 \
+  --config /etc/cow/autopilot.toml
+```
+
+### Staging Environment
+
+```bash
+orderbook \
+  --log-filter "debug" \
+  --use-json-logs true \
+  --db-max-connections 10 \
+  --node-url https://sepolia.rpc.example.com \
+  --chain-id 11155111 \
+  --config /etc/cow/orderbook.toml
+```
+
+### Local Development
+
+```bash
+driver \
+  --log-filter "trace,driver=debug" \
+  --use-json-logs false \
+  --node-url http://localhost:8545 \
+  --config driver.toml
+```
+
+## Best Practices
+
+1. **Use environment variables for secrets** - Never commit credentials to configuration files
+2. **Enable structured logging in production** - `--use-json-logs true` for better log aggregation
+3. **Set appropriate log levels** - Use `info` or `warn` in production, `debug`/`trace` for troubleshooting
+4. **Configure health checks** - Services expose metrics and health endpoints
+5. **Use runtime log filtering** - Avoid restarts when debugging production issues
+6. **Monitor connection pools** - Track database connection usage and adjust pool sizes
+7. **Set chain ID explicitly** - Catch misconfiguration early with `--chain-id` validation
+8. **Use separate RPC endpoints** - Dedicate nodes for simulation vs. general queries
+
+## Troubleshooting
+
+### Service won't start
+
+1. Check configuration file syntax (use `tombi` for TOML files)
+2. Verify database connectivity
+3. Confirm RPC endpoint accessibility
+4. Check command-line arguments for typos
+
+### Insufficient database connections
+
+```bash
+# Increase pool size
+--db-max-connections 30
+```
+
+### Debug logging not appearing
+
+```bash
+# Verify filter syntax
+--log-filter "debug,mymodule=trace"
+
+# Or change at runtime
+echo "debug" | nc -U /tmp/log_filter_override_<service>_<pid>.sock
+```
+
+### RPC rate limiting
+
+```bash
+# Use multiple endpoints
+--node-url http://primary:8545
+
+# Add delays in code or use rate limiting middleware
+```
+
+## See Also
+
+- [Database Setup](/deployment/database) - PostgreSQL configuration and migrations
+- [Monitoring](/deployment/monitoring) - Metrics, tracing, and observability
+- [Orderbook Service](/services/orderbook) - Service-specific configuration
+- [Driver Service](/services/driver) - Driver TOML reference

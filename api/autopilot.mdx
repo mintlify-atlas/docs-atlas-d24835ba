@@ -1,0 +1,509 @@
+---
+title: "Autopilot API"
+description: "API reference for the CoW Protocol Autopilot service"
+---
+
+The Autopilot service is the protocol driver that manages batch auctions. It queries the orderbook for solvable orders, constructs auctions, distributes them to solvers, ranks solutions, and coordinates settlement execution.
+
+## Overview
+
+Autopilot operates on a time-based schedule (typically every 12-15 seconds, moving towards per-block auctions). For each auction cycle:
+
+1. **Auction Creation**: Filters and collects solvable orders from orderbook
+2. **Distribution**: Sends auction data to all registered solvers via their `/solve` endpoints
+3. **Ranking**: Collects solutions, scores them, and determines winner(s)
+4. **Execution**: Instructs winning solver(s) to settle on-chain via `/settle` endpoint
+5. **Monitoring**: Tracks settlement and applies circuit breaker rules
+
+## Architecture
+
+Autopilot acts as the central coordinator:
+
+```
+Autopilot
+  ↓
+  ├─→ Colocated Solvers (external drivers)
+  └─→ Driver instances
+       ↓
+       ├─→ Internal solver engines (baseline, balancer, etc.)
+       └─→ External solver APIs (1inch, 0x, etc.)
+```
+
+## Key Endpoints
+
+### Get Current Auction
+
+<CodeGroup>
+```bash cURL
+curl "https://api.cow.fi/mainnet/api/v1/auction" \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
+</CodeGroup>
+
+Retrieves the current batch auction that solvers should be solving.
+
+**Endpoint**: `GET /api/v1/auction`
+
+<Note>
+  This endpoint is currently permissioned. Contact the CoW Protocol team in Discord to request access for your solver.
+</Note>
+
+#### Response
+
+<ResponseField name="id" type="integer">
+  Unique identifier for the auction (incrementing)
+</ResponseField>
+
+<ResponseField name="block" type="integer">
+  Block number for which the auction is valid. Orders and prices are guaranteed valid at this block.
+</ResponseField>
+
+<ResponseField name="orders" type="array">
+  Array of solvable orders included in the auction
+</ResponseField>
+
+<ResponseField name="prices" type="object">
+  Reference prices for all traded tokens (mapping of token address to price in native token)
+</ResponseField>
+
+<ResponseField name="surplusCapturingJitOrderOwners" type="array">
+  List of addresses whose JIT order surplus counts towards objective value
+</ResponseField>
+
+#### Order Structure
+
+<Expandable title="Auction Order Fields">
+  <ResponseField name="uid" type="string">
+    Order unique identifier (56 bytes hex)
+  </ResponseField>
+  
+  <ResponseField name="sellToken" type="address">
+    Token being sold
+  </ResponseField>
+  
+  <ResponseField name="buyToken" type="address">
+    Token being bought
+  </ResponseField>
+  
+  <ResponseField name="sellAmount" type="string">
+    Amount to sell in atoms
+  </ResponseField>
+  
+  <ResponseField name="buyAmount" type="string">
+    Amount to buy in atoms
+  </ResponseField>
+  
+  <ResponseField name="created" type="string">
+    Creation time (epoch seconds)
+  </ResponseField>
+  
+  <ResponseField name="validTo" type="integer">
+    Expiration timestamp
+  </ResponseField>
+  
+  <ResponseField name="kind" type="string">
+    Order type: `"buy"` or `"sell"`
+  </ResponseField>
+  
+  <ResponseField name="owner" type="address">
+    Order owner address
+  </ResponseField>
+  
+  <ResponseField name="receiver" type="address">
+    Optional custom recipient
+  </ResponseField>
+  
+  <ResponseField name="partiallyFillable" type="boolean">
+    Whether order can be partially filled
+  </ResponseField>
+  
+  <ResponseField name="executed" type="string">
+    Amount already executed
+  </ResponseField>
+  
+  <ResponseField name="preInteractions" type="array">
+    Interactions to execute before order
+  </ResponseField>
+  
+  <ResponseField name="postInteractions" type="array">
+    Interactions to execute after order
+  </ResponseField>
+  
+  <ResponseField name="sellTokenBalance" type="string">
+    Token source: `"erc20"`, `"internal"`, or `"external"`
+  </ResponseField>
+  
+  <ResponseField name="buyTokenBalance" type="string">
+    Token destination: `"erc20"` or `"internal"`
+  </ResponseField>
+  
+  <ResponseField name="class" type="string">
+    Order class: `"market"`, `"limit"`, or `"liquidity"`
+  </ResponseField>
+  
+  <ResponseField name="appData" type="string">
+    AppData hash (32 bytes hex)
+  </ResponseField>
+  
+  <ResponseField name="signature" type="string">
+    Order signature
+  </ResponseField>
+  
+  <ResponseField name="protocolFees" type="array">
+    Fee policies that apply to this order
+  </ResponseField>
+</Expandable>
+
+#### Price Object
+
+The `prices` field maps token addresses to their reference prices denominated in native token (e.g., ETH on mainnet).
+
+- **Format**: `{ "0x...tokenAddress": "1000000000000000000" }`
+- **Interpretation**: Price of `1e18` (10^18) token atoms in native token atoms
+- **Usage**: Used for computing surplus and converting fees to native token
+
+**Example**:
+```json
+{
+  "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2": "1000000000000000000",
+  "0x6B175474E89094C44Da98b954EedeAC495271d0F": "500000000000000"
+}
+```
+
+This indicates WETH trades 1:1 with ETH, and DAI is worth 0.0005 ETH.
+
+**Status Codes**:
+- `200`: Auction data returned
+- `401`: Unauthorized (missing or invalid API key)
+
+---
+
+### Get Native Price (Internal)
+
+<CodeGroup>
+```bash cURL
+curl "http://localhost:8000/native_price/0x6B175474E89094C44Da98b954EedeAC495271d0F?timeout_ms=5000"
+```
+</CodeGroup>
+
+Internal API for retrieving native token prices from autopilot's shared cache. This endpoint is used by orderbook instances.
+
+**Endpoint**: `GET /native_price/{token}`
+
+<Note>
+  This is an internal API used for communication between CoW Protocol services. It's typically not exposed publicly.
+</Note>
+
+#### Path Parameters
+
+<ParamField path="token" type="address" required>
+  Token address to get price for
+</ParamField>
+
+#### Query Parameters
+
+<ParamField query="timeout_ms" type="integer">
+  Optional timeout in milliseconds (min: 250ms, capped to configured maximum)
+</ParamField>
+
+#### Response
+
+<ResponseField name="price" type="number">
+  Price of the token in native token (e.g., 0.0005 = 1 token worth 0.0005 ETH)
+</ResponseField>
+
+**Example Response**:
+```json
+{
+  "price": 0.0005
+}
+```
+
+**Status Codes**:
+- `200`: Price retrieved successfully
+- `400`: Bad request (e.g., unsupported token)
+- `404`: No liquidity available for token
+- `429`: Rate limited by upstream estimator
+- `500`: Internal server error
+
+---
+
+## Solver Integration
+
+Solvers integrate with Autopilot by implementing specific endpoints that Autopilot calls during the auction cycle.
+
+### Required Solver Endpoints
+
+Solvers must implement these endpoints for Autopilot to interact with them:
+
+#### 1. POST /solve
+
+Receives auction data and returns solutions.
+
+**Request** (from Autopilot):
+```json
+{
+  "id": 12345,
+  "orders": [...],
+  "tokens": [...],
+  "deadline": "2024-03-04T12:00:00Z",
+  "surplusCapturingJitOrderOwners": [...]
+}
+```
+
+**Response** (from Solver):
+```json
+{
+  "solutions": [
+    {
+      "solutionId": 1,
+      "score": "1000000000000000000",
+      "submissionAddress": "0x...",
+      "orders": {
+        "0x...orderUid": {
+          "side": "sell",
+          "sellToken": "0x...",
+          "buyToken": "0x...",
+          "limitSell": "1000000000000000000",
+          "limitBuy": "900000000000000000",
+          "executedSell": "1000000000000000000",
+          "executedBuy": "950000000000000000"
+        }
+      },
+      "clearingPrices": {
+        "0x...token": "1000000000000000000"
+      },
+      "gas": 150000
+    }
+  ]
+}
+```
+
+#### 2. POST /reveal
+
+Reveals calldata for a specific solution (used in shadow competition for verification).
+
+**Request** (from Autopilot):
+```json
+{
+  "auctionId": 12345,
+  "solutionId": 1
+}
+```
+
+**Response** (from Solver):
+```json
+{
+  "calldata": {
+    "internalized": "0x...",
+    "uninternalized": "0x..."
+  }
+}
+```
+
+#### 3. POST /settle
+
+Instructs solver to submit the winning solution on-chain.
+
+**Request** (from Autopilot):
+```json
+{
+  "auctionId": 12345,
+  "solutionId": 1,
+  "submissionDeadlineLatestBlock": 19000000
+}
+```
+
+**Response**: `200 OK` (solver begins settlement submission)
+
+#### 4. POST /notify
+
+Receives notifications about solution outcomes.
+
+**Request** (from Autopilot):
+```json
+"banned"
+```
+
+or other notification types.
+
+**Response**: `200 OK`
+
+---
+
+## Auction Parameters
+
+### Order Filtering
+
+Autopilot filters orders before including them in auctions:
+
+- **Validity**: Only includes orders with `validTo > current_block_time`
+- **Balance**: Checks user has sufficient balance and allowance
+- **Liquidity**: Ensures tokens have available liquidity
+- **Fee Policies**: Attaches appropriate fee policies based on order class
+- **Deny List**: Excludes orders from deny-listed addresses
+
+### Token Pricing
+
+Autopilot maintains a cache of token prices:
+
+- **Native Token Reference**: All prices denominated in native token (ETH, xDAI, etc.)
+- **Update Frequency**: Prices refreshed periodically from liquidity sources
+- **Trusted Tokens**: Marks certain tokens as trusted for buffer trading (CIP-2)
+
+### Fee Policies
+
+Autopilot attaches fee policies to orders based on their class:
+
+<Expandable title="Fee Policy Types">
+  
+**Surplus Fee**
+```json
+{
+  "kind": "surplus",
+  "factor": 0.5,
+  "maxVolumeFactor": 0.05
+}
+```
+- Applied to orders that execute better than limit price
+- Takes `factor` % of the surplus (difference between limit and execution)
+- Capped at `maxVolumeFactor` % of order volume
+
+**Volume Fee**
+```json
+{
+  "kind": "volume",
+  "factor": 0.002
+}
+```
+- Applied as percentage of order volume
+- Common for limit orders
+
+**Price Improvement Fee**
+```json
+{
+  "kind": "priceImprovement",
+  "factor": 0.5,
+  "maxVolumeFactor": 0.01,
+  "quote": {
+    "sellAmount": "1000000000000000000",
+    "buyAmount": "900000000000000000",
+    "fee": "10000000000000000"
+  }
+}
+```
+- Takes `factor` % of improvement over best quote
+- Used when order execution improves on quoted price
+
+</Expandable>
+
+---
+
+## Solution Scoring
+
+Autopilot ranks solutions using the scoring formula defined in [CIP-20](https://snapshot.org/#/cow.eth/proposal/0x2d3f9bd1ea72dca84b03e97dda3efc1f4a42a772c54bd2037e8b62e7d09a491f):
+
+**Score = User Surplus + Protocol Fees - Gas Cost (in native token)**
+
+Where:
+- **User Surplus**: Difference between execution price and limit price for all orders
+- **Protocol Fees**: Sum of all protocol fees collected from executed orders
+- **Gas Cost**: Estimated gas usage × gas price × native token price
+
+### Reference Score (CIP-67)
+
+Starting with [CIP-67](https://forum.cow.fi/t/cip-67-moving-from-batch-auction-to-the-fair-combinatorial-auction/2967), Autopilot also computes reference scores to support the fair combinatorial auction mechanism.
+
+---
+
+## Circuit Breaker
+
+Autopilot monitors settlements and enforces compliance:
+
+### Monitoring
+
+1. **Pre-Settlement**: Validates solutions match scoring calculations
+2. **Post-Settlement**: Compares on-chain execution to promised solution
+3. **Deviation Detection**: Identifies discrepancies in amounts, prices, or fees
+
+### Enforcement Actions
+
+- **Warning**: Minor deviations logged
+- **Temporary Jail**: Solver excluded from next N auctions
+- **Ban**: Severe or repeated violations result in permanent exclusion
+
+### Notification
+
+Solvers receive notifications via `/notify` endpoint:
+- `"banned"`: Solver has been permanently banned
+- Other violation types may be added
+
+---
+
+## Solver Types
+
+### Colocated Solvers
+
+External teams run their own driver + solver infrastructure:
+- **Control**: Full control over solver logic and execution
+- **Responsibility**: Responsible for `/solve`, `/reveal`, `/settle`, and `/notify` endpoints
+- **Settlement**: Submit transactions directly to chain
+- **Examples**: External solver partners with proprietary algorithms
+
+### Non-Colocated Solvers
+
+CoW Protocol runs the driver, configured with external solver API:
+- **API Only**: Solver provides only route-finding logic
+- **Driver Handles**: Settlement encoding, simulation, submission
+- **Configuration**: Defined in driver config with API endpoint
+- **Examples**: 1inch, 0x, Balancer integrations
+
+---
+
+## Auction Lifecycle
+
+1. **T=0**: Auction starts, Autopilot filters orders and computes prices
+2. **T+0.5s**: Auction broadcast to all solvers via `/solve`
+3. **T+0.5s - T+10s**: Solvers compute solutions and respond
+4. **T+10s**: Deadline passes, Autopilot ranks solutions
+5. **T+10.5s**: Winner(s) receive `/settle` request
+6. **T+11s - T+30s**: Winner submits settlement transaction (2-3 block window)
+7. **T+30s+**: Circuit breaker validates on-chain execution
+8. **T+45s**: Next auction cycle begins
+
+<Note>
+  Timing is approximate and may vary by network and configuration.
+</Note>
+
+---
+
+## Best Practices for Solvers
+
+1. **Respond Quickly**: Return solutions well before deadline to account for network latency
+2. **Accurate Gas Estimates**: Provide realistic gas estimates for accurate scoring
+3. **Respect Constraints**: Honor order limits, balances, and partial fill flags
+4. **Apply Fee Policies**: Correctly compute and apply protocol fees
+5. **Handle Notifications**: Implement `/notify` endpoint and respond to ban notifications
+6. **Monitor Performance**: Track your solutions' win rate and reasons for losses
+7. **Simulate Settlements**: Verify solutions work on-chain before responding
+8. **Use Reference Prices**: Leverage provided token prices for consistent scoring
+
+---
+
+## Data Types
+
+See the [Orderbook API](/api/orderbook) documentation for common data types like `Address`, `TokenAmount`, `UID`, etc.
+
+### Additional Autopilot Types
+
+**DateTime**
+
+ISO 8601 UTC timestamp.
+
+**Example**: `"2020-12-03T18:35:18.814523Z"`
+
+**BigUint**
+
+Arbitrary precision unsigned integer in decimal notation.
+
+**Example**: `"1234567890"`

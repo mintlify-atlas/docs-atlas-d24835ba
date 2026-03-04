@@ -1,0 +1,499 @@
+---
+title: Contributing Guide
+description: Guidelines for contributing to CoW Protocol Services
+---
+
+Welcome! We appreciate your interest in contributing to CoW Protocol Services. This guide will help you make high-quality contributions.
+
+## Before You Start
+
+### For Bug Reports or Feature Requests
+
+<Steps>
+  <Step title="Check existing issues">
+    Search [existing issues](https://github.com/cowprotocol/services/issues) to see if your bug or feature has already been reported.
+  </Step>
+
+  <Step title="Open an issue">
+    [Create a new issue](https://github.com/cowprotocol/services/issues/new/choose) with:
+    - Clear description
+    - Steps to reproduce (for bugs)
+    - Use cases and impact (for features)
+  </Step>
+
+  <Step title="Get feedback">
+    Wait for maintainer feedback before starting major work.
+  </Step>
+</Steps>
+
+<Note>
+For serious security bugs, follow the [security policy](https://github.com/cowprotocol/services/security) instead of opening an issue.
+</Note>
+
+### For Code Contributions
+
+<Warning>
+**Non-trivial changes must be discussed first.** Only very minor changes (typos, comments, small refactors) are accepted without prior discussion.
+</Warning>
+
+Look for issues labeled ["help wanted"](https://github.com/cowprotocol/services/labels/help%20wanted) for good starting points.
+
+## Code Formatting
+
+Proper formatting is enforced by CI. Run formatters before committing.
+
+### Rust Code Formatting
+
+<Warning>
+**Always use the nightly toolchain** for formatting. Never use stable `cargo fmt`.
+</Warning>
+
+<CodeGroup>
+```bash Format all code
+just fmt
+```
+
+```bash Format specific file
+cargo +nightly fmt -- path/to/file.rs
+```
+
+```bash Check formatting (CI)
+just fmt --check
+```
+
+```bash Direct cargo command
+cargo +nightly fmt --all
+```
+</CodeGroup>
+
+**Why nightly?** The project uses nightly rustfmt features for consistent formatting.
+
+### TOML File Formatting
+
+The project uses [Tombi](https://tombi-toml.github.io/tombi/) for TOML formatting.
+
+<CodeGroup>
+```bash Format all TOML files
+just fmt-toml
+```
+
+```bash Check TOML formatting (CI)
+just fmt-toml --check
+```
+
+```bash Direct tombi command
+tombi format
+```
+</CodeGroup>
+
+**Install Tombi:**
+```bash
+cargo install tombi
+```
+
+**Editor extensions:**
+- [VS Code](https://marketplace.visualstudio.com/items?itemName=tombi-toml.tombi)
+- [Zed](https://tombi-toml.github.io/tombi/docs/editors/zed-extension)
+- [JetBrains](https://plugins.jetbrains.com/plugin/28017-tombi)
+
+## Linting
+
+Run Clippy before submitting your PR.
+
+<CodeGroup>
+```bash Using just
+just clippy
+```
+
+```bash Direct cargo
+cargo clippy --locked --workspace --all-features --all-targets -- -D warnings
+```
+</CodeGroup>
+
+<Note>
+The `-D warnings` flag treats warnings as errors. Fix all warnings before submitting.
+</Note>
+
+## Testing Requirements
+
+All PRs must pass the test suite.
+
+### Run Tests Locally
+
+<Steps>
+  <Step title="Unit tests">
+    ```bash
+    just test-unit
+    ```
+  </Step>
+
+  <Step title="Database tests">
+    Start PostgreSQL first:
+    ```bash
+    docker compose up -d
+    just test-db
+    ```
+  </Step>
+
+  <Step title="E2E tests (if relevant)">
+    ```bash
+    # Local node tests
+    just test-e2e-local
+
+    # Forked network tests (requires RPC URLs)
+    export FORK_URL_MAINNET="..."
+    export FORK_URL_GNOSIS="..."
+    just test-e2e-forked
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Always use `cargo nextest run`, never `cargo test`. The CI uses nextest and handles global state differently.
+</Warning>
+
+### Add Tests for New Code
+
+- **New features**: Add unit tests and integration tests
+- **Bug fixes**: Add regression tests that would have caught the bug
+- **Refactors**: Ensure existing tests still pass
+
+See the [Testing Guide](/development/testing) for details.
+
+## Pull Request Guidelines
+
+### Creating a PR
+
+<Steps>
+  <Step title="Fork the repository">
+    Click "Fork" on GitHub and clone your fork:
+    ```bash
+    git clone https://github.com/YOUR_USERNAME/services.git
+    cd services
+    ```
+  </Step>
+
+  <Step title="Create a feature branch">
+    ```bash
+    git checkout -b feature/my-feature
+    ```
+
+    Use descriptive branch names:
+    - `feature/add-order-validation`
+    - `fix/orderbook-race-condition`
+    - `refactor/simplify-driver-logic`
+  </Step>
+
+  <Step title="Make your changes">
+    - Write code
+    - Add tests
+    - Run formatters and linters
+    - Test locally
+  </Step>
+
+  <Step title="Commit your changes">
+    See [Commit Message Style](#commit-message-style).
+  </Step>
+
+  <Step title="Push and create PR">
+    ```bash
+    git push origin feature/my-feature
+    ```
+
+    Then create a PR on GitHub.
+  </Step>
+</Steps>
+
+### PR Checklist
+
+Before submitting, ensure:
+
+- [ ] Code is formatted with `just fmt` and `just fmt-toml`
+- [ ] Clippy passes with `just clippy`
+- [ ] Tests pass locally
+- [ ] New code has tests
+- [ ] PR description clearly explains the change
+- [ ] Related issue is linked (if applicable)
+
+### PR Description Template
+
+When you create a PR, GitHub will show a template. Fill it out completely:
+
+```markdown
+## Description
+Brief description of what this PR does.
+
+## Related Issue
+Closes #123
+
+## Changes
+- List key changes
+- Made in this PR
+
+## Testing
+Describe how you tested the changes:
+- Ran unit tests
+- Tested in playground
+- Manual testing steps
+
+## Checklist
+- [ ] Tests added/updated
+- [ ] Documentation updated (if needed)
+- [ ] Formatted with `just fmt` and `just fmt-toml`
+- [ ] Clippy passes
+```
+
+## Commit Message Style
+
+Write clear, descriptive commit messages.
+
+### Format
+
+```
+brief summary of change (50 chars or less)
+
+More detailed explanation if needed. Explain WHY you made the change,
+not just WHAT changed. The code shows what changed.
+
+- Can use bullet points
+- To list multiple aspects
+
+References #123
+```
+
+### Good Examples
+
+```
+Fix race condition in orderbook insertion
+
+Orders could be inserted with outdated validation state if another
+order was processed concurrently. Added proper locking around the
+validation + insertion sequence.
+
+Fixes #456
+```
+
+```
+Add support for ERC-1271 signature validation
+
+Enables smart contract wallets to place orders by implementing
+ERC-1271 signature verification. Required for CoW Swap smart
+wallet support.
+
+References #789
+```
+
+### Bad Examples
+
+```
+fixed bug  ❌  (too vague)
+```
+
+```
+Updated orderbook.rs  ❌  (doesn't explain why)
+```
+
+```
+refactor  ❌  (no details)
+```
+
+## Code Review Process
+
+<Steps>
+  <Step title="Initial review">
+    A maintainer will review your PR within a few days.
+  </Step>
+
+  <Step title="Address feedback">
+    - Respond to comments
+    - Make requested changes
+    - Push new commits (don't force-push during review)
+  </Step>
+
+  <Step title="Approval">
+    Once approved, a maintainer will merge your PR.
+  </Step>
+</Steps>
+
+### Review Expectations
+
+**For contributors:**
+- Be responsive to feedback
+- Be open to suggestions
+- Ask questions if something is unclear
+
+**From maintainers:**
+- Constructive feedback
+- Clear explanations for requested changes
+- Timely responses
+
+## Code Style Guidelines
+
+### Import Organization
+
+Group imports logically:
+
+```rust
+// External crates
+use anyhow::Result;
+use tokio::sync::Mutex;
+
+// Internal crates
+use crate::database::Db;
+use crate::orderbook::Order;
+
+// Local modules
+use super::validation;
+```
+
+### Prefer Type Imports
+
+Import types at the module level instead of using full paths:
+
+```rust
+// Good ✓
+use shared::arguments::TokenBucketFeeOverride;
+
+fn process(overrides: Vec<TokenBucketFeeOverride>) {
+    // ...
+}
+
+// Bad ✗
+fn process(overrides: Vec<shared::arguments::TokenBucketFeeOverride>) {
+    // ...
+}
+```
+
+### Comments
+
+Use comments sparingly:
+
+- Don't comment obvious code
+- Do comment complex algorithms or non-obvious logic
+- Do comment "why", not "what"
+- Do document public APIs
+
+```rust
+// Bad ✗
+// Increment counter
+counter += 1;
+
+// Good ✓
+// We need to delay here to avoid overwhelming the RPC node with requests.
+// The rate limit is 10 requests per second.
+tokio::time::sleep(Duration::from_millis(100)).await;
+```
+
+### Error Handling
+
+Use `anyhow::Result` for functions that can fail:
+
+```rust
+use anyhow::{Context, Result};
+
+fn process_order(order: Order) -> Result<()> {
+    validate_order(&order)
+        .context("failed to validate order")?;
+    
+    store_order(&order)
+        .context("failed to store order")?;
+    
+    Ok(())
+}
+```
+
+## Rewards for Contributors
+
+<Note>
+**Earn 100 DAI for merged PRs** that solve "help wanted" issues!
+</Note>
+
+To receive your reward:
+1. Ensure your PR is merged
+2. Include a Gnosis Chain address in your PR description or DM **mastercow.eth** on Discord
+
+## Getting Help
+
+### Community Support
+
+- **Discord**: [CoW Protocol Discord](https://discord.gg/cowprotocol)
+- **Forum**: [CoW Protocol Forums](https://forum.cow.fi)
+
+### Development Questions
+
+If you're stuck:
+1. Check the [documentation](https://docs.cow.fi)
+2. Search existing issues and discussions
+3. Ask in Discord (be specific about your problem)
+
+## What to Contribute
+
+### High-Impact Contributions
+
+<CardGroup cols={2}>
+  <Card title="Bug Fixes" icon="bug">
+    Fix reported issues, especially those affecting users
+  </Card>
+  <Card title="Performance" icon="gauge-high">
+    Optimize slow code paths or reduce resource usage
+  </Card>
+  <Card title="Tests" icon="vial">
+    Improve test coverage for critical code
+  </Card>
+  <Card title="Documentation" icon="book">
+    Clarify confusing docs or add missing examples
+  </Card>
+</CardGroup>
+
+### Areas Needing Help
+
+Check issues labeled:
+- [help wanted](https://github.com/cowprotocol/services/labels/help%20wanted)
+- [good first issue](https://github.com/cowprotocol/services/labels/good%20first%20issue)
+- [documentation](https://github.com/cowprotocol/services/labels/documentation)
+
+## Summary: Pre-PR Checklist
+
+Before submitting your PR:
+
+```bash
+# 1. Format code
+just fmt
+just fmt-toml
+
+# 2. Lint
+just clippy
+
+# 3. Test
+just test-unit
+docker compose up -d && just test-db
+
+# 4. Verify formatting
+just fmt --check
+just fmt-toml --check
+```
+
+Then:
+- Write clear commit messages
+- Fill out PR template completely
+- Link related issues
+- Respond to review feedback
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Setup Guide" icon="wrench" href="/development/setup">
+    Set up your development environment
+  </Card>
+  <Card title="Testing Guide" icon="vial" href="/development/testing">
+    Learn how to test your changes
+  </Card>
+  <Card title="Playground" icon="play" href="/development/playground">
+    Test in a full local environment
+  </Card>
+  <Card title="GitHub Issues" icon="github" href="https://github.com/cowprotocol/services/issues">
+    Find issues to work on
+  </Card>
+</CardGroup>
+
+Thank you for contributing to CoW Protocol!

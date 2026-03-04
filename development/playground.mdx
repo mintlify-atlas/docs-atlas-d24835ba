@@ -1,0 +1,518 @@
+---
+title: Playground Environment
+description: Run a complete local CoW Protocol stack for development and testing
+---
+
+The CoW Protocol Playground provides a complete local development environment with all services, a forked blockchain, and automatic recompilation.
+
+## What is the Playground?
+
+The playground is a Docker Compose-based environment that runs:
+- All CoW Protocol services (orderbook, autopilot, driver, baseline solver)
+- Forked blockchain via Anvil (Foundry)
+- CoW Swap UI for testing
+- CoW Explorer for transaction tracking
+- PostgreSQL with migrations
+- Otterscan block explorer
+- Sourcify contract verification
+- Grafana for monitoring
+
+**Key feature**: The playground watches your local code and automatically recompiles and restarts services when you make changes.
+
+<Note>
+Currently only **Fork mode** is supported. The playground forks a real network (Mainnet by default) via Anvil. A clean local network mode is planned but not yet implemented.
+</Note>
+
+## Quick Start
+
+<Steps>
+  <Step title="Configure the environment">
+    Copy the example environment file and edit it:
+
+    ```bash
+    cd playground
+    cp .env.example .env
+    ```
+
+    Edit `.env` and set your RPC URL:
+    ```bash .env
+    ETH_RPC_URL="https://mainnet.infura.io/v3/YOUR_KEY"
+    ```
+
+    <Warning>
+    **RPC performance is critical.** For optimal performance, use a local node like `reth` on mainnet. Free public RPCs can be slow.
+    </Warning>
+  </Step>
+
+  <Step title="Start the playground">
+    ```bash
+    docker compose -f playground/docker-compose.fork.yml up --build
+    ```
+
+    <Note>
+    **Non-Linux users**: Use `docker-compose.non-interactive.yml` instead. Due to how Docker mounts work outside Linux, cargo-watch leads to [very slow builds](https://github.com/watchexec/cargo-watch#docker-running-cargo-commands-over-a-mount-is-very-slow).
+    
+    ```bash
+    docker compose -f playground/docker-compose.non-interactive.yml up --build
+    ```
+    </Note>
+  </Step>
+
+  <Step title="Wait for services to stabilize">
+    The first startup takes several minutes:
+    - Services compile (5-10 minutes)
+    - Contracts deploy
+    - Services sync
+
+    Watch the logs:
+    ```bash
+    docker compose -f playground/docker-compose.fork.yml logs -f
+    ```
+  </Step>
+
+  <Step title="Configure your wallet">
+    Add the local network to your wallet:
+
+    - **RPC URL**: `http://localhost:8545`
+    - **Chain ID**: `1` (or your forked network)
+    - **Currency**: ETH
+
+    See [Wallet Configuration](#wallet-configuration) for detailed instructions.
+  </Step>
+
+  <Step title="Import a test account">
+    Use any of the first 10 accounts from the test mnemonic (see [Test Accounts](#test-accounts)).
+
+    Each account starts with 10,000 ETH.
+  </Step>
+</Steps>
+
+Once running, access:
+- **CoW Swap UI**: http://localhost:8000
+- **CoW Explorer**: http://localhost:8001
+- **Otterscan**: http://localhost:8003
+- **Orderbook API**: http://localhost:8080
+- **Database Admin**: http://localhost:8082
+- **Grafana**: http://localhost:3000
+
+## Available Services and Ports
+
+| Component | Container Name | Host Port | Container Port | Tokio Console Port |
+|-----------|----------------|-----------|----------------|--------------------|
+| Autopilot | `autopilot` | N/A | N/A | 6670 |
+| Driver | `driver` | N/A | 80 | 6671 |
+| Baseline Solver | `baseline` | N/A | 80 | 6672 |
+| CoW Swap UI | `cowswap` | 8000 | 80 | N/A |
+| CoW Explorer | `cowexplorer` | 8001 | 80 | N/A |
+| Orderbook | `orderbook` | 8080 | 80 | 6669 |
+| Anvil (RPC) | `chain` | 8545 | 8545 | N/A |
+| PostgreSQL | `postgres` | 5432 | 5432 | N/A |
+| Adminer | `adminer` | 8082 | 8080 | N/A |
+| Grafana | `grafana` | 3000 | 3000 | N/A |
+| Otterscan | `otterscan` | 8003 | 80 | N/A |
+| Sourcify | `sourcify` | 5555 | 5555 | N/A |
+| Sourcify DB | `sourcify-db` | N/A | 5432 | N/A |
+
+## Test Mnemonic and Accounts
+
+All playground accounts derive from this test mnemonic:
+
+```
+test test test test test test test test test test test junk
+```
+
+**Derivation path**: `m/44'/60'/0'/0/`
+
+**Private Keys** (first 10 accounts):
+
+```
+(0) 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+(1) 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+(2) 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a
+(3) 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6
+(4) 0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a
+(5) 0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba
+(6) 0x92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e
+(7) 0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdbf7cbf4356
+(8) 0xdbda1821b80551c9d65939329250298aa3472ba22feea921c0cf5d620ea67b97
+(9) 0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6
+```
+
+<Warning>
+**Never use these keys on real networks!** They are publicly known test accounts.
+</Warning>
+
+Each account starts with **10,000 ETH** (set by Anvil).
+
+## Using CoW Swap UI Locally
+
+<Steps>
+  <Step title="Wrap some ETH">
+    Before trading, you need WETH. Visit http://localhost:8000 and wrap some ETH.
+
+    <Note>
+    EthFlow is not configured by default in the playground.
+    </Note>
+  </Step>
+
+  <Step title="Make a swap">
+    Select tokens and create a swap. The UI connects to your local orderbook at `localhost:8080`.
+  </Step>
+
+  <Step title="Watch the logs">
+    Follow the order through the system:
+
+    ```bash
+    docker compose -f playground/docker-compose.fork.yml logs -f autopilot
+    docker compose -f playground/docker-compose.fork.yml logs -f driver
+    docker compose -f playground/docker-compose.fork.yml logs -f baseline
+    ```
+  </Step>
+
+  <Step title="Track in Explorer">
+    View your order at http://localhost:8001
+  </Step>
+
+  <Step title="Inspect transaction">
+    Use Otterscan at http://localhost:8003 to see the full transaction trace.
+  </Step>
+</Steps>
+
+## Wallet Configuration
+
+### Rabby Wallet (Recommended)
+
+Rabby provides the best experience:
+
+1. Install [Rabby Wallet](https://rabby.io/)
+2. Add custom network:
+   - **RPC URL**: `http://localhost:8545`
+   - **Chain ID**: `1`
+3. Import a test account (see [Test Accounts](#test-accounts))
+4. When connecting to CoW Swap, select "MetaMask" (Rabby intercepts this)
+
+### MetaMask
+
+MetaMask doesn't allow changing the Mainnet RPC in the UI. Use this workaround:
+
+1. Open your browser's developer console on the CoW Swap page
+2. Run this JavaScript:
+
+```javascript
+await window.ethereum.request({
+  method: 'wallet_addEthereumChain',
+  params: [
+    {
+      chainId: '0x1',
+      chainName: 'Local Network (Mainnet)',
+      rpcUrls: ['http://localhost:8545'],
+      nativeCurrency: {
+        name: "Ethereum",
+        symbol: "ETH",
+        decimals: 18,
+      },
+    },
+  ],
+});
+```
+
+3. MetaMask will prompt to add the network
+4. Switch to "Local Network (Mainnet)"
+5. Import a test account
+
+## Debugging with tokio-console
+
+The playground enables [tokio-console](https://github.com/tokio-rs/console) for inspecting async runtime behavior.
+
+<Steps>
+  <Step title="Enable tokio-console">
+    Set the environment variable:
+
+    ```bash
+    TOKIO_CONSOLE=true docker compose -f playground/docker-compose.fork.yml up
+    ```
+
+    <Note>
+    Tokio-console is **only available in the playground**. Production builds don't include the overhead.
+    </Note>
+  </Step>
+
+  <Step title="Install tokio-console">
+    ```bash
+    cargo install --locked tokio-console
+    ```
+  </Step>
+
+  <Step title="Connect to a service">
+    Each service exposes a tokio-console port (see [Services table](#available-services-and-ports)):
+
+    ```bash
+    # Connect to orderbook
+    tokio-console http://localhost:6669
+
+    # Connect to autopilot
+    tokio-console http://localhost:6670
+
+    # Connect to driver
+    tokio-console http://localhost:6671
+
+    # Connect to baseline solver
+    tokio-console http://localhost:6672
+    ```
+  </Step>
+</Steps>
+
+You'll see:
+- Active tasks
+- Task states and durations
+- Resource usage
+- Async call stacks
+
+## Resetting the Playground
+
+Reset when you need a clean state (e.g., after breaking changes or nonce issues).
+
+<Steps>
+  <Step title="Stop and remove containers">
+    ```bash
+    docker compose -f playground/docker-compose.fork.yml down --remove-orphans --volumes
+    ```
+
+    This removes:
+    - All containers
+    - All volumes (database state, blockchain state)
+    - Network configuration
+  </Step>
+
+  <Step title="Reset your wallet">
+    **Critical**: Your wallet must be reset too, or you'll have nonce mismatches.
+
+    **Rabby**: Go to **More → Clear pending**
+
+    **MetaMask**: Follow [these instructions](https://support.metamask.io/hc/en-us/articles/360015488891-How-to-clear-your-account-activity-reset-account)
+  </Step>
+
+  <Step title="Restart the playground">
+    ```bash
+    docker compose -f playground/docker-compose.fork.yml up --build
+    ```
+  </Step>
+</Steps>
+
+## Switching Networks
+
+Change the forked network:
+
+<Steps>
+  <Step title="Edit .env">
+    Change `ETH_RPC_URL` in `playground/.env`:
+
+    ```bash .env
+    # Gnosis Chain
+    ETH_RPC_URL="https://rpc.gnosischain.com"
+
+    # Arbitrum
+    ETH_RPC_URL="https://arb1.arbitrum.io/rpc"
+    ```
+  </Step>
+
+  <Step title="Reset the stack">
+    ```bash
+    docker compose -f playground/docker-compose.fork.yml down --remove-orphans --volumes
+    docker compose -f playground/docker-compose.fork.yml up -d
+    ```
+  </Step>
+
+  <Step title="Update wallet network">
+    Change your wallet's RPC URL to match the new chain ID.
+  </Step>
+</Steps>
+
+## Live Reloading
+
+The playground automatically recompiles and restarts services when you edit code.
+
+**Linux users**: Full live reload with `docker-compose.fork.yml`
+
+**macOS/Windows users**: Use `docker-compose.non-interactive.yml` for better performance (manual restart needed)
+
+### Manual Restart
+
+Restart a specific service after code changes:
+
+```bash
+docker compose -f playground/docker-compose.fork.yml restart orderbook
+```
+
+## Limiting Services
+
+Run only specific services to save resources:
+
+```bash
+# Only driver and autopilot
+docker compose -f playground/docker-compose.fork.yml up driver autopilot
+
+# Only orderbook
+docker compose -f playground/docker-compose.fork.yml up orderbook postgres
+```
+
+## Contract Verification with Sourcify
+
+The playground includes a local [Sourcify](https://sourcify.dev/) instance for contract verification.
+
+### Sourcify Modes
+
+Configure in `playground/.env`:
+
+```bash
+# Use public Sourcify (default) - shows publicly verified contracts
+SOURCIFY_MODE=cloud
+
+# Use local Sourcify - shows contracts verified on your local instance  
+SOURCIFY_MODE=local
+```
+
+After changing, recreate Otterscan:
+```bash
+docker compose -f docker-compose.fork.yml up -d otterscan
+```
+
+<Note>
+A simple restart won't work - you must recreate the container to re-read the `.env` file.
+</Note>
+
+### Verifying Contracts
+
+**Using Foundry:**
+```bash
+forge verify-contract <address> <contract> \
+  --verifier sourcify \
+  --verifier-url http://localhost:5555
+```
+
+**Using Sourcify API:**
+```bash
+curl -X POST http://localhost:5555/verify \
+  -F "address=<address>" \
+  -F "chain=1" \
+  -F "files[]=@Contract.sol"
+```
+
+Verified contracts display source code in Otterscan at http://localhost:8003
+
+## Using Otterscan
+
+[Otterscan](https://docs.otterscan.io/) is a powerful local block explorer integrated into the playground.
+
+**Access**: http://localhost:8003
+
+**Features:**
+- Transaction traces with full call trees
+- Decoded input data and logs
+- Token transfers (ERC20, ERC721)
+- Gas profiling
+- Contract source code (via Sourcify)
+
+**Debugging failed transactions:**
+1. Click transaction link from CoW Swap or Explorer
+2. View the **Trace** tab
+3. Find where the revert occurred
+4. Check revert reason in trace output
+
+For CoW settlements, you can trace:
+- Pre-interactions
+- Token approvals and transfers  
+- AMM interactions (Uniswap, etc.)
+- Post-interactions
+
+## Advanced Configuration
+
+Customize the playground by editing `playground/docker-compose.fork.yml`:
+
+- Change service ports
+- Add environment variables
+- Mount additional volumes
+- Adjust resource limits
+
+See service documentation for available environment variables:
+- `orderbook --help`
+- `autopilot --help`
+- `driver --help`
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Services fail to start">
+    **Check logs:**
+    ```bash
+    docker compose -f playground/docker-compose.fork.yml logs orderbook
+    ```
+
+    **Common issues:**
+    - Port conflicts (another service using 8080, 8545, etc.)
+    - RPC connection issues
+    - Database migration failures
+  </Accordion>
+
+  <Accordion title="Compilation is very slow">
+    **macOS/Windows users**: Use the non-interactive compose file:
+    ```bash
+    docker compose -f playground/docker-compose.non-interactive.yml up
+    ```
+
+    **All platforms**: Allocate more memory to Docker (8GB+ recommended)
+  </Accordion>
+
+  <Accordion title="Trades don't settle">
+    **Check services are running:**
+    ```bash
+    docker compose -f playground/docker-compose.fork.yml ps
+    ```
+
+    **Check logs for errors:**
+    ```bash
+    docker compose -f playground/docker-compose.fork.yml logs autopilot driver baseline
+    ```
+
+    **Ensure you have WETH**, not just ETH
+  </Accordion>
+
+  <Accordion title="Wallet nonce errors">
+    **Reset wallet state:**
+    - Rabby: **More → Clear pending**
+    - MetaMask: **Settings → Advanced → Clear activity data**
+
+    **Or reset the playground** (see [Resetting](#resetting-the-playground))
+  </Accordion>
+
+  <Accordion title="RPC connection errors">
+    **Check your RPC URL** in `playground/.env`:
+    ```bash
+    cat playground/.env | grep ETH_RPC_URL
+    ```
+
+    **Test RPC endpoint:**
+    ```bash
+    curl -X POST $ETH_RPC_URL \
+      -H "Content-Type: application/json" \
+      -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Testing Guide" icon="vial" href="/development/testing">
+    Run tests against your changes
+  </Card>
+  <Card title="Contributing" icon="code-pull-request" href="/development/contributing">
+    Submit a pull request
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Understand the system
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/orderbook">
+    Orderbook API documentation
+  </Card>
+</CardGroup>

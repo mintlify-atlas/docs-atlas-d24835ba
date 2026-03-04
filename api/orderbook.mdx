@@ -1,0 +1,879 @@
+---
+title: "Orderbook API"
+description: "Complete API reference for the CoW Protocol Orderbook service"
+---
+
+The Orderbook API is the primary interface for order placement, querying, and price estimation in CoW Protocol.
+
+## Base URLs
+
+The Orderbook API is deployed across multiple chains with both production and staging environments:
+
+### Production
+- **Mainnet**: `https://api.cow.fi/mainnet`
+- **Gnosis Chain**: `https://api.cow.fi/xdai`
+- **Arbitrum One**: `https://api.cow.fi/arbitrum_one`
+- **Base**: `https://api.cow.fi/base`
+- **Avalanche**: `https://api.cow.fi/avalanche`
+- **Polygon**: `https://api.cow.fi/polygon`
+- **Lens**: `https://api.cow.fi/lens`
+- **Linea**: `https://api.cow.fi/linea`
+- **BNB**: `https://api.cow.fi/bnb`
+- **Plasma**: `https://api.cow.fi/plasma`
+- **Ink**: `https://api.cow.fi/ink`
+- **Sepolia (Testnet)**: `https://api.cow.fi/sepolia`
+
+### Staging
+- **Mainnet**: `https://barn.api.cow.fi/mainnet`
+- **Gnosis Chain**: `https://barn.api.cow.fi/xdai`
+- **Arbitrum One**: `https://barn.api.cow.fi/arbitrum_one`
+- **Base**: `https://barn.api.cow.fi/base`
+- And more...
+
+### Local Development
+- `http://localhost:8080`
+
+## Authentication
+
+Most endpoints are public and don't require authentication. Order placement and cancellation require EIP-712 signatures to prove ownership.
+
+## Rate Limits
+
+- **Order creation**: Protected against excessive order placements (HTTP 429)
+- **Quote requests**: Protected against excessive quote requests (HTTP 429)
+- **Order cancellation**: Best-effort cancellation to prevent in-flight settlement conflicts
+
+## Key Endpoints
+
+### Create Order
+
+<CodeGroup>
+```bash cURL
+curl -X POST "https://api.cow.fi/mainnet/api/v1/orders" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sellToken": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+    "buyToken": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    "sellAmount": "1000000000000000000",
+    "buyAmount": "900000000000000000",
+    "validTo": 1678886400,
+    "appData": "{}",
+    "feeAmount": "0",
+    "kind": "sell",
+    "partiallyFillable": false,
+    "signingScheme": "eip712",
+    "signature": "0x..."
+  }'
+```
+</CodeGroup>
+
+Creates a new order. To replace an existing order, include a valid replacement order UID in the appData.
+
+**Endpoint**: `POST /api/v1/orders`
+
+#### Request Body
+
+<ParamField body="sellToken" type="address" required>
+  ERC-20 token to be sold (20 byte hex address with 0x prefix)
+</ParamField>
+
+<ParamField body="buyToken" type="address" required>
+  ERC-20 token to be bought (20 byte hex address with 0x prefix)
+</ParamField>
+
+<ParamField body="sellAmount" type="string" required>
+  Amount of sellToken in atoms (decimal string)
+</ParamField>
+
+<ParamField body="buyAmount" type="string" required>
+  Amount of buyToken in atoms (decimal string)
+</ParamField>
+
+<ParamField body="validTo" type="integer" required>
+  Unix timestamp (uint32) until which the order is valid
+</ParamField>
+
+<ParamField body="appData" type="string" required>
+  Full appData JSON string or appDataHash (32 bytes hex with 0x prefix). Use `"{}"` for no custom appData.
+</ParamField>
+
+<ParamField body="feeAmount" type="string" required>
+  Fee amount in sellToken atoms. Set to "0" for new orders (fees computed dynamically by solvers).
+</ParamField>
+
+<ParamField body="kind" type="string" required>
+  Order type: `"sell"` or `"buy"`
+</ParamField>
+
+<ParamField body="partiallyFillable" type="boolean" required>
+  Whether the order can be partially filled
+</ParamField>
+
+<ParamField body="signingScheme" type="string" required>
+  Signature type: `"eip712"`, `"ethsign"`, `"presign"`, or `"eip1271"`
+</ParamField>
+
+<ParamField body="signature" type="string" required>
+  65 bytes encoded as hex with 0x prefix (r || s || v)
+</ParamField>
+
+<ParamField body="receiver" type="address">
+  Optional address to receive the bought tokens (defaults to owner)
+</ParamField>
+
+<ParamField body="sellTokenBalance" type="string" default="erc20">
+  Where to draw sellToken from: `"erc20"`, `"internal"`, or `"external"`
+</ParamField>
+
+<ParamField body="buyTokenBalance" type="string" default="erc20">
+  Where to transfer buyToken: `"erc20"` or `"internal"`
+</ParamField>
+
+<ParamField body="from" type="address">
+  Address that must match the signature signer (helps catch encoding errors)
+</ParamField>
+
+<ParamField body="quoteId" type="integer">
+  Optional quote ID to link order to a quote for slippage analysis
+</ParamField>
+
+<ParamField body="appDataHash" type="string">
+  For debugging: hash of appData for verification
+</ParamField>
+
+#### Response
+
+<ResponseField name="orderUid" type="string">
+  Unique order identifier (56 bytes hex with 0x prefix)
+</ResponseField>
+
+**Status Codes**:
+- `201`: Order accepted
+- `400`: Validation error (see OrderPostError)
+- `403`: Account is deny-listed
+- `404`: No route found for quoting the order
+- `422`: Invalid JSON
+- `429`: Too many order placements
+- `500`: Internal error
+
+#### Error Types
+
+<Expandable title="OrderPostError Types">
+  - `DuplicatedOrder`: Order already exists
+  - `QuoteNotFound`: No valid quote found
+  - `QuoteNotVerified`: Quote couldn't be verified
+  - `InvalidQuote`: Quote data is invalid
+  - `MissingFrom`: Required `from` field missing
+  - `WrongOwner`: Signature doesn't match owner
+  - `InvalidEip1271Signature`: EIP-1271 signature verification failed
+  - `InsufficientBalance`: Not enough token balance
+  - `InsufficientAllowance`: Not enough token allowance
+  - `InvalidSignature`: Signature is invalid
+  - `SellAmountOverflow`: Sell amount exceeds limits
+  - `TransferSimulationFailed`: Token transfer simulation failed
+  - `ZeroAmount`: Sell or buy amount is zero
+  - `IncompatibleSigningScheme`: Signing scheme not supported
+  - `TooManyLimitOrders`: Limit order quota exceeded
+  - `TooMuchGas`: Gas estimate too high
+  - `UnsupportedBuyTokenDestination`: Invalid buyTokenBalance
+  - `UnsupportedSellTokenSource`: Invalid sellTokenBalance
+  - `UnsupportedOrderType`: Order type not supported
+  - `InsufficientValidTo`: validTo too soon
+  - `ExcessiveValidTo`: validTo too far in future
+  - `InvalidNativeSellToken`: Cannot sell native token
+  - `SameBuyAndSellToken`: Buy and sell tokens are the same
+  - `UnsupportedToken`: Token not supported
+  - `InvalidAppData`: AppData format invalid
+  - `AppDataHashMismatch`: AppData hash doesn't match
+  - `AppDataMismatch`: AppData content mismatch
+  - `AppdataFromMismatch`: AppData from field mismatch
+  - `MetadataSerializationFailed`: Failed to serialize metadata
+  - `OldOrderActivelyBidOn`: Cannot replace order with active bids
+</Expandable>
+
+---
+
+### Get Order
+
+<CodeGroup>
+```bash cURL
+curl "https://api.cow.fi/mainnet/api/v1/orders/0xff2e2e54d178997f173266817c1e9ed6fee1a1aae4b43971c53b543cffcc2969845c6f5599fbb25dbdd1b9b013daf85c03f3c63763e4bc4a"
+```
+</CodeGroup>
+
+Retrieves an existing order by its UID.
+
+**Endpoint**: `GET /api/v1/orders/{UID}`
+
+#### Path Parameters
+
+<ParamField path="UID" type="string" required>
+  56 bytes order UID encoded as hex with 0x prefix
+</ParamField>
+
+#### Response
+
+<ResponseField name="order" type="object">
+  Complete order data including creation parameters and metadata
+</ResponseField>
+
+<Expandable title="Order Fields">
+  <ResponseField name="uid" type="string">
+    Order unique identifier
+  </ResponseField>
+  
+  <ResponseField name="sellToken" type="address">
+    Token being sold
+  </ResponseField>
+  
+  <ResponseField name="buyToken" type="address">
+    Token being bought
+  </ResponseField>
+  
+  <ResponseField name="sellAmount" type="string">
+    Amount to sell in atoms
+  </ResponseField>
+  
+  <ResponseField name="buyAmount" type="string">
+    Amount to buy in atoms
+  </ResponseField>
+  
+  <ResponseField name="validTo" type="integer">
+    Unix timestamp expiration
+  </ResponseField>
+  
+  <ResponseField name="kind" type="string">
+    Order type: `"sell"` or `"buy"`
+  </ResponseField>
+  
+  <ResponseField name="owner" type="address">
+    Order owner address (signer)
+  </ResponseField>
+  
+  <ResponseField name="status" type="string">
+    Current status: `"presignaturePending"`, `"open"`, `"fulfilled"`, `"cancelled"`, or `"expired"`
+  </ResponseField>
+  
+  <ResponseField name="class" type="string">
+    Order class: `"market"`, `"limit"`, or `"liquidity"`
+  </ResponseField>
+  
+  <ResponseField name="creationDate" type="string">
+    ISO 8601 UTC timestamp of creation
+  </ResponseField>
+  
+  <ResponseField name="executedSellAmount" type="string">
+    Total amount of sellToken executed (including fees)
+  </ResponseField>
+  
+  <ResponseField name="executedBuyAmount" type="string">
+    Total amount of buyToken received
+  </ResponseField>
+  
+  <ResponseField name="executedFee" type="string">
+    Total fees paid (network + protocol)
+  </ResponseField>
+  
+  <ResponseField name="executedFeeToken" type="address">
+    Token in which fee was captured
+  </ResponseField>
+  
+  <ResponseField name="settlementContract" type="address">
+    CoW Protocol settlement contract address
+  </ResponseField>
+  
+  <ResponseField name="quote" type="object">
+    Original quote data if order was created with a quote
+  </ResponseField>
+</Expandable>
+
+**Status Codes**:
+- `200`: Order found
+- `400`: Invalid order UID
+- `404`: Order not found
+
+---
+
+### Get Orders by Account
+
+<CodeGroup>
+```bash cURL
+curl "https://api.cow.fi/mainnet/api/v1/account/0x6810e776880c02933d47db1b9fc05908e5386b96/orders?offset=0&limit=10"
+```
+</CodeGroup>
+
+Retrieves paginated orders for a specific address, sorted by creation date descending (newest first).
+
+**Endpoint**: `GET /api/v1/account/{owner}/orders`
+
+#### Path Parameters
+
+<ParamField path="owner" type="address" required>
+  Account address (20 byte hex with 0x prefix)
+</ParamField>
+
+#### Query Parameters
+
+<ParamField query="offset" type="integer" default="0">
+  Pagination offset
+</ParamField>
+
+<ParamField query="limit" type="integer" default="10">
+  Results per page (min: 1, max: 1000)
+</ParamField>
+
+#### Response
+
+<ResponseField name="orders" type="array">
+  Array of order objects (see Get Order response)
+</ResponseField>
+
+**Status Codes**:
+- `200`: Success
+- `400`: Invalid parameters (e.g., limit too large)
+
+---
+
+### Get Quote
+
+<CodeGroup>
+```bash cURL
+curl -X POST "https://api.cow.fi/mainnet/api/v1/quote" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sellToken": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+    "buyToken": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    "kind": "sell",
+    "sellAmountBeforeFee": "1000000000000000000",
+    "from": "0x6810e776880c02933d47db1b9fc05908e5386b96",
+    "priceQuality": "verified",
+    "validFor": 600
+  }'
+```
+</CodeGroup>
+
+Computes a price quote and fee estimate for order parameters. Returns a complete order ready to sign.
+
+**Endpoint**: `POST /api/v1/quote`
+
+#### Request Body
+
+<ParamField body="sellToken" type="address" required>
+  Token to sell
+</ParamField>
+
+<ParamField body="buyToken" type="address" required>
+  Token to buy
+</ParamField>
+
+<ParamField body="from" type="address" required>
+  Address that will sign the order
+</ParamField>
+
+<ParamField body="kind" type="string" required>
+  Quote type: `"sell"` or `"buy"`
+</ParamField>
+
+**Amount Parameters** (one of):
+
+<ParamField body="sellAmountBeforeFee" type="string">
+  For sell orders: total amount available (fee deducted from this)
+</ParamField>
+
+<ParamField body="sellAmountAfterFee" type="string">
+  For sell orders: exact sellAmount (fee added on top)
+</ParamField>
+
+<ParamField body="buyAmountAfterFee" type="string">
+  For buy orders: exact buyAmount desired
+</ParamField>
+
+**Validity Parameters** (one of):
+
+<ParamField body="validTo" type="integer">
+  Absolute unix timestamp expiration
+</ParamField>
+
+<ParamField body="validFor" type="integer">
+  Relative validity duration in seconds
+</ParamField>
+
+**Optional Parameters**:
+
+<ParamField body="receiver" type="address">
+  Custom recipient for bought tokens
+</ParamField>
+
+<ParamField body="appData" type="string">
+  Full appData JSON or hash
+</ParamField>
+
+<ParamField body="appDataHash" type="string">
+  Hash to verify appData
+</ParamField>
+
+<ParamField body="sellTokenBalance" type="string" default="erc20">
+  Token source: `"erc20"`, `"internal"`, or `"external"`
+</ParamField>
+
+<ParamField body="buyTokenBalance" type="string" default="erc20">
+  Token destination: `"erc20"` or `"internal"`
+</ParamField>
+
+<ParamField body="priceQuality" type="string" default="verified">
+  Quality level: `"fast"`, `"optimal"`, or `"verified"` (recommended)
+</ParamField>
+
+<ParamField body="signingScheme" type="string" default="eip712">
+  Signature type: `"eip712"`, `"ethsign"`, `"presign"`, or `"eip1271"`
+</ParamField>
+
+<ParamField body="onchainOrder" type="boolean" default={false}>
+  Whether order is for on-chain placement
+</ParamField>
+
+<ParamField body="timeout" type="integer">
+  Custom timeout in milliseconds (capped to default)
+</ParamField>
+
+#### Response
+
+<ResponseField name="quote" type="object">
+  Order parameters ready to sign and submit
+</ResponseField>
+
+<Expandable title="Quote Response Fields">
+  <ResponseField name="quote.sellToken" type="address">
+    Token to sell
+  </ResponseField>
+  
+  <ResponseField name="quote.buyToken" type="address">
+    Token to buy
+  </ResponseField>
+  
+  <ResponseField name="quote.sellAmount" type="string">
+    Amount to sell in atoms
+  </ResponseField>
+  
+  <ResponseField name="quote.buyAmount" type="string">
+    Amount to buy in atoms
+  </ResponseField>
+  
+  <ResponseField name="quote.validTo" type="integer">
+    Expiration timestamp
+  </ResponseField>
+  
+  <ResponseField name="quote.feeAmount" type="string">
+    Estimated network fee in sellToken atoms
+  </ResponseField>
+  
+  <ResponseField name="quote.gasAmount" type="string">
+    Estimated gas units required
+  </ResponseField>
+  
+  <ResponseField name="quote.gasPrice" type="string">
+    Estimated gas price in Wei
+  </ResponseField>
+  
+  <ResponseField name="quote.sellTokenPrice" type="string">
+    Price of sellToken in native token atoms
+  </ResponseField>
+  
+  <ResponseField name="from" type="address">
+    Address for whom quote was computed
+  </ResponseField>
+  
+  <ResponseField name="expiration" type="string">
+    ISO 8601 UTC timestamp when quote expires
+  </ResponseField>
+  
+  <ResponseField name="id" type="integer">
+    Quote ID for linking to orders
+  </ResponseField>
+  
+  <ResponseField name="verified" type="boolean">
+    Whether quote was verified via simulation
+  </ResponseField>
+  
+  <ResponseField name="protocolFeeBps" type="string">
+    Protocol fee in basis points (e.g., "2" = 0.02%)
+  </ResponseField>
+</Expandable>
+
+**Status Codes**:
+- `200`: Quote generated
+- `400`: Error quoting order (see PriceEstimationError)
+- `404`: No route found
+- `422`: Invalid JSON
+- `429`: Too many quote requests
+- `500`: Internal error
+
+#### Price Estimation Error Types
+
+<Expandable title="PriceEstimationError Types">
+  - `QuoteNotVerified`: Quote couldn't be verified
+  - `UnsupportedToken`: Token not supported
+  - `NoLiquidity`: No liquidity available for trade
+  - `UnsupportedOrderType`: Order type not supported
+</Expandable>
+
+---
+
+### Cancel Order(s)
+
+<CodeGroup>
+```bash cURL - Cancel Multiple
+curl -X DELETE "https://api.cow.fi/mainnet/api/v1/orders" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderUids": [
+      "0xff2e2e54d178997f173266817c1e9ed6fee1a1aae4b43971c53b543cffcc2969845c6f5599fbb25dbdd1b9b013daf85c03f3c63763e4bc4a"
+    ],
+    "signature": "0x...",
+    "signingScheme": "eip712"
+  }'
+```
+
+```bash cURL - Cancel Single (Deprecated)
+curl -X DELETE "https://api.cow.fi/mainnet/api/v1/orders/0xff2e2e54d178997f173266817c1e9ed6fee1a1aae4b43971c53b543cffcc2969845c6f5599fbb25dbdd1b9b013daf85c03f3c63763e4bc4a" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "signature": "0x...",
+    "signingScheme": "eip712"
+  }'
+```
+</CodeGroup>
+
+Cancels orders by marking them invalid. This is a best-effort cancellation and might not prevent solvers from settling if the order is in an in-flight settlement.
+
+**Endpoints**:
+- `DELETE /api/v1/orders` (multiple orders)
+- `DELETE /api/v1/orders/{UID}` (single order, deprecated)
+
+#### Request Body
+
+<ParamField body="orderUids" type="array">
+  Array of order UIDs to cancel (up to 128, only for multiple cancellation endpoint)
+</ParamField>
+
+<ParamField body="signature" type="string" required>
+  EIP-712 signature of OrderCancellation(s) message
+</ParamField>
+
+<ParamField body="signingScheme" type="string" required>
+  Signature scheme: `"eip712"` or `"ethsign"`
+</ParamField>
+
+**Status Codes**:
+- `200`: Order(s) cancelled
+- `400`: Malformed signature
+- `401`: Invalid signature
+- `404`: Order(s) not found
+- `422`: Invalid JSON
+
+---
+
+### Get Order Status
+
+<CodeGroup>
+```bash cURL
+curl "https://api.cow.fi/mainnet/api/v1/orders/0xff2e2e54d178997f173266817c1e9ed6fee1a1aae4b43971c53b543cffcc2969845c6f5599fbb25dbdd1b9b013daf85c03f3c63763e4bc4a/status"
+```
+</CodeGroup>
+
+Returns the current status of an order with information about solver competition.
+
+**Endpoint**: `GET /api/v1/orders/{UID}/status`
+
+#### Response
+
+<ResponseField name="type" type="string">
+  Status: `"open"`, `"scheduled"`, `"active"`, `"solved"`, `"executing"`, `"traded"`, or `"cancelled"`
+</ResponseField>
+
+<ResponseField name="value" type="array">
+  List of solvers who proposed solutions, sorted by score ascending (last = winner)
+</ResponseField>
+
+**Status Codes**:
+- `200`: Status retrieved
+- `400`: Invalid order UID
+
+---
+
+### Get Native Token Price
+
+<CodeGroup>
+```bash cURL
+curl "https://api.cow.fi/mainnet/api/v1/token/0x6B175474E89094C44Da98b954EedeAC495271d0F/native_price"
+```
+</CodeGroup>
+
+Returns the native token price for a given token (e.g., how much ETH is needed to buy 1 atom of the token).
+
+**Endpoint**: `GET /api/v1/token/{token}/native_price`
+
+#### Path Parameters
+
+<ParamField path="token" type="address" required>
+  Token address
+</ParamField>
+
+#### Response
+
+<ResponseField name="price" type="number">
+  Native token price (e.g., 0.0005 means 1 token = 0.0005 ETH)
+</ResponseField>
+
+**Status Codes**:
+- `200`: Price retrieved
+- `400`: Error finding price
+- `404`: No liquidity found
+- `500`: Unexpected error
+
+---
+
+### Get Trades
+
+<CodeGroup>
+```bash cURL - By Owner
+curl "https://api.cow.fi/mainnet/api/v2/trades?owner=0x6810e776880c02933d47db1b9fc05908e5386b96&offset=0&limit=10"
+```
+
+```bash cURL - By Order UID
+curl "https://api.cow.fi/mainnet/api/v2/trades?orderUid=0xff2e2e54d178997f173266817c1e9ed6fee1a1aae4b43971c53b543cffcc2969845c6f5599fbb25dbdd1b9b013daf85c03f3c63763e4bc4a"
+```
+</CodeGroup>
+
+Returns paginated trade data. Exactly one of `owner` or `orderUid` must be specified.
+
+**Endpoint**: `GET /api/v2/trades`
+
+#### Query Parameters
+
+<ParamField query="owner" type="address">
+  Filter by trader address
+</ParamField>
+
+<ParamField query="orderUid" type="string">
+  Filter by order UID
+</ParamField>
+
+<ParamField query="offset" type="integer" default="0">
+  Pagination offset
+</ParamField>
+
+<ParamField query="limit" type="integer" default="10">
+  Results per page (min: 1, max: 1000)
+</ParamField>
+
+#### Response
+
+<ResponseField name="trades" type="array">
+  Array of trade objects
+</ResponseField>
+
+<Expandable title="Trade Fields">
+  <ResponseField name="blockNumber" type="integer">
+    Block in which trade occurred
+  </ResponseField>
+  
+  <ResponseField name="logIndex" type="integer">
+    Log index in the block
+  </ResponseField>
+  
+  <ResponseField name="orderUid" type="string">
+    Order UID matched by this trade
+  </ResponseField>
+  
+  <ResponseField name="owner" type="address">
+    Trader address
+  </ResponseField>
+  
+  <ResponseField name="sellToken" type="address">
+    Token sold
+  </ResponseField>
+  
+  <ResponseField name="buyToken" type="address">
+    Token bought
+  </ResponseField>
+  
+  <ResponseField name="sellAmount" type="string">
+    Amount sold including fees
+  </ResponseField>
+  
+  <ResponseField name="sellAmountBeforeFees" type="string">
+    Amount sold excluding fees
+  </ResponseField>
+  
+  <ResponseField name="buyAmount" type="string">
+    Amount bought
+  </ResponseField>
+  
+  <ResponseField name="txHash" type="string">
+    Settlement transaction hash
+  </ResponseField>
+  
+  <ResponseField name="executedProtocolFees" type="array">
+    List of protocol fees applied to this trade
+  </ResponseField>
+</Expandable>
+
+---
+
+### Get Solver Competition
+
+<CodeGroup>
+```bash cURL - By Auction ID
+curl "https://api.cow.fi/mainnet/api/v2/solver_competition/12345"
+```
+
+```bash cURL - By Transaction Hash
+curl "https://api.cow.fi/mainnet/api/v2/solver_competition/by_tx_hash/0xd51f28edffcaaa76be4a22f6375ad289272c037f3cc072345676e88d92ced8b5"
+```
+
+```bash cURL - Latest
+curl "https://api.cow.fi/mainnet/api/v2/solver_competition/latest"
+```
+</CodeGroup>
+
+Retrieves information about solver competition for a specific auction.
+
+**Endpoints**:
+- `GET /api/v2/solver_competition/{auction_id}`
+- `GET /api/v2/solver_competition/by_tx_hash/{tx_hash}`
+- `GET /api/v2/solver_competition/latest`
+
+#### Response
+
+<ResponseField name="auctionId" type="integer">
+  Auction ID
+</ResponseField>
+
+<ResponseField name="auctionStartBlock" type="integer">
+  Block where auction started
+</ResponseField>
+
+<ResponseField name="auctionDeadlineBlock" type="integer">
+  Block deadline for settlement
+</ResponseField>
+
+<ResponseField name="transactionHashes" type="array">
+  Winning settlement transaction hashes
+</ResponseField>
+
+<ResponseField name="referenceScores" type="object">
+  Reference scores per solver (CIP-67)
+</ResponseField>
+
+<ResponseField name="auction" type="object">
+  Auction data (orders, prices)
+</ResponseField>
+
+<ResponseField name="solutions" type="array">
+  All submitted solutions with rankings
+</ResponseField>
+
+---
+
+### AppData Management
+
+#### Get AppData
+
+<CodeGroup>
+```bash cURL
+curl "https://api.cow.fi/mainnet/api/v1/app_data/0x0000000000000000000000000000000000000000000000000000000000000000"
+```
+</CodeGroup>
+
+**Endpoint**: `GET /api/v1/app_data/{app_data_hash}`
+
+Retrieves the full appData document for a given hash.
+
+**Status Codes**:
+- `200`: AppData found
+- `400`: Invalid hash
+- `404`: AppData not found
+
+#### Register AppData
+
+<CodeGroup>
+```bash cURL - With Hash
+curl -X PUT "https://api.cow.fi/mainnet/api/v1/app_data/0x..." \
+  -H "Content-Type: application/json" \
+  -d '{"fullAppData": "{\"version\":\"0.9.0\",\"metadata\":{}}" }'
+```
+
+```bash cURL - Auto Hash
+curl -X PUT "https://api.cow.fi/mainnet/api/v1/app_data" \
+  -H "Content-Type: application/json" \
+  -d '{"fullAppData": "{\"version\":\"0.9.0\",\"metadata\":{}}" }'
+```
+</CodeGroup>
+
+**Endpoints**:
+- `PUT /api/v1/app_data/{app_data_hash}` (specify hash)
+- `PUT /api/v1/app_data` (returns computed hash)
+
+Registers full appData so orders can reference it by hash.
+
+**Status Codes**:
+- `200`: AppData already exists
+- `201`: AppData registered
+- `400`: Validation error
+- `422`: Invalid JSON
+- `500`: Storage error
+
+---
+
+## Data Types
+
+### Address
+20 byte Ethereum address encoded as hex with 0x prefix.
+
+**Example**: `"0x6810e776880c02933d47db1b9fc05908e5386b96"`
+
+### TokenAmount
+Amount of an ERC20 token as 256-bit unsigned integer in decimal notation.
+
+**Example**: `"1234567890"`
+
+### UID
+56 bytes order unique identifier encoded as hex with 0x prefix.
+- Bytes 0-32: Order digest
+- Bytes 32-52: Owner address
+- Bytes 52-56: Valid to timestamp (uint32)
+
+**Example**: `"0xff2e2e54d178997f173266817c1e9ed6fee1a1aae4b43971c53b543cffcc2969845c6f5599fbb25dbdd1b9b013daf85c03f3c63763e4bc4a"`
+
+### TransactionHash
+32 byte digest encoded as hex with 0x prefix.
+
+**Example**: `"0xd51f28edffcaaa76be4a22f6375ad289272c037f3cc072345676e88d92ced8b5"`
+
+### AppDataHash
+32 bytes encoded as hex with 0x prefix (keccak256 hash of appData JSON string).
+
+**Example**: `"0x0000000000000000000000000000000000000000000000000000000000000000"`
+
+---
+
+## Order Lifecycle
+
+1. **Quote**: Request quote via `POST /api/v1/quote`
+2. **Sign**: Sign the quoted order parameters using EIP-712
+3. **Submit**: Create order via `POST /api/v1/orders`
+4. **Track**: Monitor status via `GET /api/v1/orders/{UID}/status`
+5. **Query**: Retrieve order details via `GET /api/v1/orders/{UID}`
+6. **Cancel** (optional): Cancel via `DELETE /api/v1/orders`
+7. **Verify**: Check trades via `GET /api/v2/trades`
+
+## Best Practices
+
+1. **Always use verified quotes**: Set `priceQuality: "verified"` for production orders
+2. **Link quotes to orders**: Include `quoteId` when creating orders for better analytics
+3. **Set reasonable validTo**: Don't make orders valid for too long (gas prices fluctuate)
+4. **Handle rate limits**: Implement exponential backoff for 429 responses
+5. **Validate signatures**: Use the `from` field to catch signature encoding errors early
+6. **Monitor order status**: Poll status endpoint to track order through settlement
+7. **Use appData wisely**: Follow the [appData schema](https://github.com/cowprotocol/app-data) for interoperability

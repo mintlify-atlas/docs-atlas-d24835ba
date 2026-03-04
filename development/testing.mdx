@@ -1,0 +1,458 @@
+---
+title: Testing Guide
+description: Comprehensive guide to testing CoW Protocol Services
+---
+
+This guide covers the testing philosophy, test types, and how to run tests for CoW Protocol Services.
+
+## Testing Philosophy
+
+<Warning>
+**Always use `cargo nextest run` instead of `cargo test`.**
+
+The CI uses [cargo-nextest](https://nexte.st/) which handles global state differently than `cargo test`. Some tests may pass with `cargo test` but fail in CI, or vice versa.
+</Warning>
+
+The project uses `just` commands for convenience, which automatically use `cargo nextest`:
+
+```bash
+just test-unit      # Unit tests
+just test-db        # Database tests  
+just test-e2e-local # E2E tests on local node
+just test-e2e-forked # E2E tests on forked network
+just test-driver    # Driver tests
+```
+
+## Test Types
+
+### Unit Tests
+
+Fast tests that don't require external dependencies. They test individual functions and modules in isolation.
+
+<CodeGroup>
+```bash Using just
+just test-unit
+```
+
+```bash Direct cargo nextest
+cargo nextest run
+```
+</CodeGroup>
+
+**What's tested:**
+- Pure functions and business logic
+- Data structure operations
+- Serialization/deserialization
+- Mathematical calculations
+
+### Documentation Tests
+
+Tests embedded in documentation comments. These ensure code examples in docs stay up-to-date.
+
+<CodeGroup>
+```bash Using just
+just test-doc
+```
+
+```bash Direct cargo
+cargo test --doc
+```
+</CodeGroup>
+
+<Note>
+Documentation tests use `cargo test` (not nextest) as nextest doesn't support doc tests.
+</Note>
+
+## Database Tests
+
+Tests that require PostgreSQL. These test database interactions, migrations, and SQL queries.
+
+### Prerequisites
+
+<Steps>
+  <Step title="Start PostgreSQL">
+    ```bash
+    docker compose up -d
+    ```
+
+    This starts PostgreSQL on port `5432` and runs migrations automatically.
+  </Step>
+
+  <Step title="Verify database is running">
+    ```bash
+    docker compose ps
+    ```
+  </Step>
+</Steps>
+
+### Running Database Tests
+
+<CodeGroup>
+```bash Using just
+just test-db
+```
+
+```bash Direct cargo nextest
+cargo nextest run postgres -p orderbook -p database -p autopilot \
+  --test-threads 1 --run-ignored ignored-only
+```
+</CodeGroup>
+
+<Note>
+**Why `--test-threads 1`?** Database tests modify shared state (database tables). Running them in parallel could cause race conditions and test failures.
+
+**Why `--run-ignored ignored-only`?** Database tests are marked with `#[ignore]` because they require external PostgreSQL. This flag runs only ignored tests.
+</Note>
+
+## End-to-End (E2E) Tests
+
+E2E tests validate complete workflows by deploying contracts, running services, and executing real transactions.
+
+All E2E tests are located in `crates/e2e/tests/`.
+
+### E2E Local Node Tests
+
+Tests that run against a clean local Ethereum node (no forking).
+
+```bash
+just test-e2e-local
+```
+
+Or with cargo:
+```bash
+cargo nextest run -p e2e local_node \
+  --test-threads 1 --failure-output final --run-ignored ignored-only
+```
+
+**What's tested:**
+- Order placement and settlement
+- Solver competition
+- Protocol interactions
+- Contract deployments
+
+### E2E Forked Network Tests
+
+Tests that fork real networks (Mainnet or Gnosis Chain) to test against production state.
+
+#### Prerequisites
+
+<Steps>
+  <Step title="Install Foundry (anvil)">
+    ```bash
+    curl -L https://foundry.paradigm.xyz | bash
+    foundryup
+    ```
+  </Step>
+
+  <Step title="Set RPC URLs">
+    You need RPC endpoints for forking:
+
+    ```bash .env
+    export FORK_URL_MAINNET="https://mainnet.infura.io/v3/YOUR_KEY"
+    export FORK_URL_GNOSIS="https://rpc.gnosischain.com"
+    ```
+
+    <Tip>
+    **RPC Providers:**
+    - Mainnet: [Chainlist](https://chainlist.org/chain/1)
+    - Gnosis: [Gnosis RPC Providers](https://docs.gnosischain.com/tools/RPC%20Providers/)
+    </Tip>
+  </Step>
+</Steps>
+
+#### Running Forked Tests
+
+<CodeGroup>
+```bash Using just
+just test-e2e-forked
+```
+
+```bash Direct cargo nextest
+cargo nextest run -p e2e forked_node \
+  --test-threads 1 --run-ignored ignored-only --failure-output final
+```
+</CodeGroup>
+
+**What's tested:**
+- Integration with real tokens (USDC, DAI, etc.)
+- Real liquidity sources (Uniswap, Balancer)
+- Actual contract addresses
+- Production-like scenarios
+
+<Note>
+The `ANVIL_COMMAND` environment variable controls the anvil binary path. It defaults to `"anvil"` which must be in your PATH.
+</Note>
+
+### Custom E2E Test Filters
+
+Run specific E2E tests by name or pattern:
+
+```bash
+just test-e2e "local_node::test_name"
+just test-e2e "forked_node" "--nocapture"
+```
+
+## Driver Tests
+
+Specialized tests for the driver component that require extra stack space.
+
+<CodeGroup>
+```bash Using just
+just test-driver
+```
+
+```bash Direct cargo nextest
+RUST_MIN_STACK=3145728 cargo nextest run -p driver \
+  --test-threads 1 --run-ignored ignored-only
+```
+</CodeGroup>
+
+<Note>
+Driver tests need `RUST_MIN_STACK=3145728` (3MB) because they perform complex simulations that can overflow the default stack.
+</Note>
+
+## Flaky Test Workflow
+
+Sometimes tests are flaky and fail intermittently in CI but pass locally. To test your fix:
+
+<Steps>
+  <Step title="Identify the flaky test">
+    Note the test name from the failing CI run.
+  </Step>
+
+  <Step title="Run the GitHub Action">
+    Go to: **Actions → run-flaky-test** in the GitHub repository.
+
+    This workflow runs the test multiple times to verify stability.
+  </Step>
+
+  <Step title="Verify the fix">
+    If the test passes consistently in CI, your fix is likely good!
+  </Step>
+</Steps>
+
+The workflow is defined in `.github/workflows/pull-request.yaml`.
+
+## Test Organization
+
+Tests are organized throughout the codebase:
+
+```
+crates/
+├── e2e/              # End-to-end tests
+│   ├── tests/        # E2E test files
+│   │   ├── forked_node/
+│   │   └── local_node/
+│   └── src/          # E2E test helpers
+├── orderbook/
+│   ├── src/          # Source with inline unit tests
+│   └── tests/        # Integration tests
+├── autopilot/
+│   ├── src/          # Source with inline unit tests
+│   └── tests/        # Integration tests
+└── testlib/          # Shared test utilities
+```
+
+### Test Helpers
+
+**`testlib` crate**: Provides shared utilities for writing tests
+- Mock HTTP servers
+- Test fixtures
+- Common assertions
+- Helper functions
+
+**`crates/e2e/src`**: E2E-specific helpers
+- Node setup
+- Contract deployment
+- Service initialization
+
+## Running All Tests (Like CI)
+
+To run the complete test suite locally:
+
+```bash
+# 1. Documentation tests
+just test-doc
+
+# 2. Unit tests
+just test-unit
+
+# 3. Database tests (requires postgres)
+docker compose up -d
+just test-db
+
+# 4. E2E local tests
+just test-e2e-local
+
+# 5. E2E forked tests (requires FORK_URL_* env vars)
+export FORK_URL_MAINNET="..."
+export FORK_URL_GNOSIS="..."
+just test-e2e-forked
+
+# 6. Driver tests
+just test-driver
+```
+
+<Warning>
+Running all tests takes 30-60 minutes. Most development only requires unit tests and relevant integration tests.
+</Warning>
+
+## Writing Tests
+
+### Unit Test Example
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_order_validation() {
+        let order = Order::default();
+        assert!(order.validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_async_function() {
+        let result = fetch_data().await;
+        assert!(result.is_ok());
+    }
+}
+```
+
+### Database Test Example
+
+```rust
+#[tokio::test]
+#[ignore] // Requires PostgreSQL
+async fn test_insert_order() {
+    let db = testlib::pg_pool().await;
+    let order = Order::default();
+    
+    let result = db.insert_order(&order).await;
+    assert!(result.is_ok());
+}
+```
+
+### E2E Test Example
+
+```rust
+#[tokio::test]
+#[ignore] // E2E test
+async fn test_order_settlement() {
+    let services = testlib::start_services().await;
+    
+    // Place order
+    let order_uid = services.create_order(/* ... */).await;
+    
+    // Wait for settlement
+    services.wait_for_settlement(order_uid).await;
+    
+    // Verify results
+    let order = services.get_order(order_uid).await;
+    assert_eq!(order.status, OrderStatus::Fulfilled);
+}
+```
+
+## Test Coverage
+
+While the project doesn't enforce coverage metrics, aim for:
+- High coverage of business logic
+- Critical paths well-tested
+- Edge cases covered
+- Error conditions tested
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Keep tests fast" icon="rocket">
+    Unit tests should run in milliseconds. Use mocks for external dependencies.
+  </Card>
+  <Card title="Test one thing" icon="bullseye">
+    Each test should verify a single behavior or scenario.
+  </Card>
+  <Card title="Use descriptive names" icon="tag">
+    Test names should clearly describe what they test: `test_order_fails_when_expired`
+  </Card>
+  <Card title="Avoid flaky tests" icon="clock">
+    Don't rely on timing, random data, or external state that can change.
+  </Card>
+</CardGroup>
+
+## Continuous Integration
+
+The CI runs on every PR and push to main. See `.github/workflows/pull-request.yaml` for the complete pipeline:
+
+1. **Lint**: Formatting and clippy checks
+2. **Doc tests**: Documentation examples
+3. **Unit tests**: Fast unit tests
+4. **Database tests**: PostgreSQL integration
+5. **E2E tests**: Both local and forked
+6. **Driver tests**: Driver-specific tests
+7. **Security**: Trivy and cargo-audit scans
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Test passes locally but fails in CI">
+    **Likely causes:**
+    - Using `cargo test` instead of `cargo nextest run`
+    - Test depends on local state or timing
+    - Test needs `--test-threads 1` but runs in parallel
+
+    **Solution:**
+    ```bash
+    cargo nextest run --test-threads 1
+    ```
+  </Accordion>
+
+  <Accordion title="Database tests fail with connection errors">
+    **Check PostgreSQL is running:**
+    ```bash
+    docker compose ps
+    docker compose logs db
+    ```
+
+    **Reset database:**
+    ```bash
+    docker compose down --volumes
+    docker compose up -d
+    ```
+  </Accordion>
+
+  <Accordion title="E2E forked tests timeout or fail">
+    **Check RPC URLs are set:**
+    ```bash
+    echo $FORK_URL_MAINNET
+    echo $FORK_URL_GNOSIS
+    ```
+
+    **Use a reliable RPC:**
+    - Free public RPCs can be slow or rate-limited
+    - Consider using Infura, Alchemy, or running a local node
+  </Accordion>
+
+  <Accordion title="Driver tests stack overflow">
+    **Ensure RUST_MIN_STACK is set:**
+    ```bash
+    RUST_MIN_STACK=3145728 cargo nextest run -p driver
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Setup Guide" icon="wrench" href="/development/setup">
+    Set up your development environment
+  </Card>
+  <Card title="Playground" icon="play" href="/development/playground">
+    Test changes in a full local environment
+  </Card>
+  <Card title="Contributing" icon="code-pull-request" href="/development/contributing">
+    Submit your changes
+  </Card>
+  <Card title="E2E Tests" icon="flask" href="/reference/e2e-tests">
+    Detailed E2E test reference
+  </Card>
+</CardGroup>
