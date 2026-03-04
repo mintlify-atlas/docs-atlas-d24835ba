@@ -1,0 +1,87 @@
+{
+  "projectType": "api-service",
+  "projectName": "CoW Protocol Services",
+  "projectDescription": "Off-chain backend services for CoW Protocol, a decentralized trading protocol with batch auctions on EVM networks.",
+  "theme": "aspen",
+  "primaryColor": "#7c7c7c",
+  "lightColor": "#060606",
+  "darkColor": "#c2c2c2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Services",
+            "pages": [
+              "services/orderbook",
+              "services/autopilot",
+              "services/driver",
+              "services/solver"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "development/setup",
+              "development/testing",
+              "development/playground",
+              "development/contributing"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/configuration",
+              "deployment/database",
+              "deployment/monitoring"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "APIs",
+            "pages": [
+              "api/orderbook",
+              "api/autopilot",
+              "api/driver",
+              "api/solver"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "REST API for order submission and queries across multiple chains",
+    "Automated auction management via Autopilot service",
+    "Driver service for solution execution and on-chain settlement",
+    "Internal solver engine with baseline strategies",
+    "PostgreSQL-backed order persistence and validation",
+    "Multi-chain support (Mainnet, Gnosis, Arbitrum, Base, etc.)",
+    "Real-time order validation and fee estimation",
+    "Batch auction settlement with MEV protection"
+  ],
+  "publicApiSurface": [
+    "POST /api/v1/orders - Create order",
+    "GET /api/v1/orders/{uid} - Get order by UID",
+    "GET /api/v1/account/{address}/orders - Get orders by account",
+    "POST /api/v1/quote - Get price quote",
+    "POST /api/v1/fee - Estimate order fees",
+    "GET /api/v1/solvable_orders - Get solvable orders (Autopilot)",
+    "POST /api/v1/solve - Submit solution (Driver)",
+    "POST /api/v1/reveal - Reveal solution (Driver)",
+    "GET /api/v1/settle - Execute settlement (Driver)"
+  ]
+}
